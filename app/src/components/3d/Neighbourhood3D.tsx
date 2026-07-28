@@ -338,7 +338,22 @@ function windowUnit(
 
 /* ────────────────────────────── Buildings ───────────────────────────── */
 
-function houseNode(h: HouseSpec, mats: MatBag, rich: boolean): React.ReactNode {
+/**
+ * Ein Nachbarhaus.
+ *
+ * `realGround` ist die wichtigste Unterscheidung darin. Liegt unter der Szene
+ * ein echtes Luftbild, hat der Generator am Boden **nichts** mehr zu suchen:
+ * Einfahrt, Vorgartenrasen, Weg, Hecke, Zaun, Mülltonnen, geparktes Auto — all
+ * das erfindet er anhand eines gedachten Grundstückszuschnitts, der mit dem
+ * tatsächlichen nichts zu tun hat. Über einem Foto, das die echten Einfahrten
+ * und Hecken bereits zeigt, entsteht daraus eine zweite, falsche Wirklichkeit:
+ * erfundener Rasen über echtem Pflaster, erfundene Hecken quer durch echte
+ * Gärten.
+ *
+ * Stehen bleibt, was aufragt und vermessen ist — der Baukörper und sein Dach.
+ * Das Flache zeigt das Luftbild besser, als der Generator es raten kann.
+ */
+function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false): React.ReactNode {
   const { m, facades, roofs, spec } = mats
   const facade = facades[h.facadeIndex % facades.length]
   const roofMat = roofs[h.roofIndex % roofs.length]
@@ -352,6 +367,8 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean): React.ReactNode {
   const front = -1
   const detail = h.lod === 'full'
   const mid = h.lod !== 'massing'
+  /** Darf der Generator am Boden noch etwas erfinden? */
+  const ground = !realGround
   // The sun's shadow camera only spans the plan and its immediate surroundings
   // (see the directional light in ThreeDView), so a house further out can never
   // land in the shadow map — it would only cost a second traversal per frame.
@@ -507,24 +524,24 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean): React.ReactNode {
         parts.push(<mesh key={`cp${sx}${sz}`} position={[gx + sx * 1.4, 1.25, gz + sz * D * 0.26]} material={m.metal}><cylinderGeometry args={[0.06, 0.06, 2.5, 6]} /></mesh>)
       }
     }
-    parts.push(
+    if (ground) parts.push(
       <mesh key="dv" position={[gx, 0.006, front * (D / 2 + h.driveLengthM / 2)]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.drive}>
         <planeGeometry args={[2.9, h.driveLengthM]} />
       </mesh>,
     )
-    if (h.parkedCar) parts.push(car('pc', { x: gx, z: front * (D / 2 + Math.min(2.6, h.driveLengthM * 0.5)) }, 0, mats.carBodies[h.carColorIndex % mats.carBodies.length], mats, detail))
+    if (h.parkedCar && ground) parts.push(car('pc', { x: gx, z: front * (D / 2 + Math.min(2.6, h.driveLengthM * 0.5)) }, 0, mats.carBodies[h.carColorIndex % mats.carBodies.length], mats, detail))
   }
 
   // Front garden: lawn strip, path to the door, boundary treatment. Its depth
   // is the setback the generator resolved, so the boundary lands exactly on the
   // property line and never on the pavement.
   const frontLen = h.frontYardM
-  parts.push(
+  if (ground) parts.push(
     <mesh key="fg" position={[0, 0.003, front * (D / 2 + frontLen / 2)]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.lawnPlot}>
       <planeGeometry args={[plot.widthM - 0.6, frontLen]} />
     </mesh>,
   )
-  if (mid) {
+  if (mid && ground) {
     parts.push(
       <mesh key="pa" position={[0, 0.006, front * (D / 2 + frontLen / 2)]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.walk}>
         <planeGeometry args={[1.2, frontLen]} />
@@ -532,7 +549,7 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean): React.ReactNode {
     )
   }
 
-  if (mid && h.boundary !== 'open') {
+  if (mid && ground && h.boundary !== 'open') {
     const by = front * (D / 2 + frontLen * 0.96)
     const segW = (plot.widthM - 1.6) / 2
     for (const sx of [-1, 1]) {
@@ -568,8 +585,10 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean): React.ReactNode {
     }
   }
 
-  // Kerbside life: bins, a letterbox, a bike stand.
-  if (detail) {
+  // Kerbside life: bins, a letterbox, a bike stand. Alles am erfundenen
+  // Grundstückszuschnitt ausgerichtet und damit über einem echten Luftbild
+  // schlicht an der falschen Stelle.
+  if (detail && ground) {
     const kerbZ = front * (D / 2 + frontLen * 0.86)
     if (h.bins > 0) {
       parts.push(
@@ -722,9 +741,22 @@ export function car(
 
 /* ────────────────────────────── Streets ─────────────────────────────── */
 
-function streetNodes(world: Neighbourhood, mats: MatBag, rich: boolean): React.ReactNode[] {
+/**
+ * Die Straßen.
+ *
+ * Der Verlauf stammt aus OSM und stimmt; Breite, Bordstein, Gehweg und
+ * Markierung erfindet dagegen der Regionalstil. Über einem echten Luftbild ist
+ * das ein grauer Streifen quer über die tatsächliche Straße — daneben, in der
+ * falschen Breite, mit erfundenen Linien. Deshalb bleibt der Belag bei
+ * `realGround` weg.
+ *
+ * Was aufragt, bleibt: Laternen und Bäume stehen weiterhin, denn ein Luftbild
+ * zeigt sie nur von oben und kann sie nicht ersetzen.
+ */
+function streetNodes(world: Neighbourhood, mats: MatBag, rich: boolean, realGround = false): React.ReactNode[] {
   const { m, spec } = mats
   const out: React.ReactNode[] = []
+  const ground = !realGround
 
   for (const seg of world.network.segments) {
     const mid = { x: (seg.a.x + seg.b.x) / 2, z: (seg.a.z + seg.b.z) / 2 }
@@ -732,7 +764,7 @@ function streetNodes(world: Neighbourhood, mats: MatBag, rich: boolean): React.R
     const L = seg.lengthM
     const W = seg.widthM
 
-    out.push(
+    if (ground) out.push(
       <group key={`st-${seg.id}`} position={[mid.x, GROUND_Y, mid.z]} rotation={[0, rotY, 0]}>
         <mesh position={[0, 0.004, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.road}><planeGeometry args={[L, W]} /></mesh>
         {seg.sidewalkM > 0 && [-1, 1].map((s) => (
@@ -765,7 +797,7 @@ function streetNodes(world: Neighbourhood, mats: MatBag, rich: boolean): React.R
   // Junction character: the roundabout is a real island with a kerb ring.
   for (const node of world.network.nodes.values()) {
     if (node.roundabout) {
-      out.push(
+      if (ground) out.push(
         <group key={`ra-${node.id}`} position={[node.at.x, GROUND_Y, node.at.z]}>
           <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.road}><circleGeometry args={[11, 32]} /></mesh>
           <mesh position={[0, 0.05, 0]} material={m.kerb}><cylinderGeometry args={[4.4, 4.4, 0.2, 28]} /></mesh>
@@ -779,7 +811,7 @@ function streetNodes(world: Neighbourhood, mats: MatBag, rich: boolean): React.R
       )
     }
     if (node.crossing) {
-      out.push(
+      if (ground) out.push(
         <group key={`cr-${node.id}`} position={[node.at.x, GROUND_Y, node.at.z]}>
           {Array.from({ length: 7 }).map((_, b) => (
             <mesh key={b} position={[(b - 3) * 0.62, 0.008, 0]} rotation={[-Math.PI / 2, 0, 0]} material={m.zebra}><planeGeometry args={[0.42, 7]} /></mesh>
@@ -976,7 +1008,7 @@ function amenityNode(a: Amenity, mats: MatBag, rich: boolean): React.ReactNode {
   return <group key={a.id} position={[a.at.x, GROUND_Y, a.at.z]} rotation={[0, a.rotationY, 0]}>{parts}</group>
 }
 
-function parkNode(park: ParkSpec, mats: MatBag, rich: boolean): React.ReactNode {
+function parkNode(park: ParkSpec, mats: MatBag, rich: boolean, realGround = false): React.ReactNode {
   const { m } = mats
   const w = park.maxX - park.minX
   const d = park.maxZ - park.minZ
@@ -984,7 +1016,9 @@ function parkNode(park: ParkSpec, mats: MatBag, rich: boolean): React.ReactNode 
   const cz = (park.minZ + park.maxZ) / 2
   const parts: React.ReactNode[] = []
 
-  parts.push(<mesh key="g" position={[0, 0.004, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.lawnPlot}><planeGeometry args={[w, d]} /></mesh>)
+  // Der Parkrasen ist eine Fläche in erfundener Größe an erfundener Stelle;
+  // das Luftbild zeigt die echte Grünfläche bereits.
+  if (!realGround) parts.push(<mesh key="g" position={[0, 0.004, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.lawnPlot}><planeGeometry args={[w, d]} /></mesh>)
 
   // Gravel path: one quad per polyline leg.
   for (let i = 1; i < park.path.length; i++) {
@@ -1155,10 +1189,10 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
       )
     }
 
-    nodes.push(...streetNodes(world, mats, rich))
-    for (const h of world.houses) nodes.push(houseNode(h, mats, rich))
+    nodes.push(...streetNodes(world, mats, rich, !!groundTexture))
+    for (const h of world.houses) nodes.push(houseNode(h, mats, rich, !!groundTexture))
     for (const a of world.amenities) nodes.push(amenityNode(a, mats, rich))
-    if (world.park) nodes.push(parkNode(world.park, mats, rich))
+    if (world.park) nodes.push(parkNode(world.park, mats, rich, !!groundTexture))
     for (const [i, f] of world.furniture.entries()) {
       // Drains and manholes are pure garnish at low tier.
       if (!rich && (f.kind === 'drain' || f.kind === 'manhole' || f.kind === 'signpost')) continue
