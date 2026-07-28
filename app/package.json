@@ -16,7 +16,8 @@
     "verify:imagery": "vite-node scripts/verify-imagery.ts",
     "verify:structures": "vite-node scripts/verify-structures.ts",
     "verify:shadow-frustum": "vite-node scripts/verify-shadow-frustum.ts",
-    "verify:dop": "vite-node scripts/verify-dop.ts"
+    "verify:dop": "vite-node scripts/verify-dop.ts",
+    "verify:world": "vite-node scripts/verify-world.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",

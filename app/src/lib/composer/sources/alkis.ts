@@ -179,6 +179,25 @@ export function bboxAround(at: GeoPoint, radiusM: number): string {
   ].join(',')
 }
 
+/**
+ * Wie viele Objekte je Ebene abgefragt werden. Eine OGC API Features liefert
+ * ohne `limit` nur eine Handvoll und schneidet stillschweigend ab — die Zahl
+ * ist also kein Detail, sondern entscheidet, ob die Nachbarschaft vollständig
+ * ist.
+ */
+export interface AlkisLimits { parcels: number; buildings: number; landUse: number }
+
+/** Enge Abfrage um ein Grundstück: ein paar Nachbarn genügen. */
+export const SITE_LIMITS: AlkisLimits = { parcels: 60, buildings: 120, landUse: 60 }
+
+/**
+ * Weite Abfrage für die 3D-Nachbarschaft. Eine Bounding-Box von rund 450 m
+ * Kantenlänge enthält in einem Wohngebiet mehrere hundert Baukörper; mit den
+ * 120 aus `SITE_LIMITS` bliebe die halbe Straße unbebaut, ohne dass ein Fehler
+ * auftritt.
+ */
+export const WORLD_LIMITS: AlkisLimits = { parcels: 400, buildings: 900, landUse: 250 }
+
 export class AlkisSource {
   constructor(
     private readonly transport: AlkisTransport = new HttpAlkisTransport(),
@@ -189,9 +208,19 @@ export class AlkisSource {
    * Liefert Flurstücke, Katastergebäude und Nutzungsflächen im Umkreis.
    * Wirft nie: außerhalb NRW oder bei Ausfall kommt `undefined` zurück.
    */
-  async fetchSite(at: GeoPoint, radiusM = 90, signal?: AbortSignal): Promise<AlkisSite | undefined> {
+  async fetchSite(
+    at: GeoPoint,
+    radiusM = 90,
+    signal?: AbortSignal,
+    limits: AlkisLimits = SITE_LIMITS,
+  ): Promise<AlkisSite | undefined> {
     const bbox = bboxAround(at, radiusM)
-    const key = `alkis/v1/${bbox}`
+    // Die Grenzen gehören in den Schlüssel: dieselbe Bounding-Box mit einem
+    // höheren Limit ist eine **andere** Antwort. Ohne das würde die enge
+    // Analyse-Abfrage der weiten Nachbarschaftsabfrage ihre abgeschnittene
+    // Fassung aus dem Cache unterschieben — und die Nachbarhäuser fehlten,
+    // ohne dass irgendetwas fehlschlägt.
+    const key = `alkis/v1/${bbox}/${limits.parcels}-${limits.buildings}-${limits.landUse}`
     const hit = this.cache.get(key)
     if (hit && Date.now() - hit.storedAt < ALKIS_TTL_MS) return hit.site
 
@@ -200,9 +229,9 @@ export class AlkisSource {
       // Die drei Ebenen parallel — es sind unabhängige Sammlungen, und die
       // Schnittstelle verträgt das problemlos.
       const [parcels, buildings, landUse] = await Promise.all([
-        this.transport.items<ParcelProps>('flurstueck', bbox, 60, deadline),
-        this.transport.items<CadastreBuildingProps>('gebaeude_bauwerk', bbox, 120, deadline),
-        this.transport.items<LandUseProps>('nutzung', bbox, 60, deadline),
+        this.transport.items<ParcelProps>('flurstueck', bbox, limits.parcels, deadline),
+        this.transport.items<CadastreBuildingProps>('gebaeude_bauwerk', bbox, limits.buildings, deadline),
+        this.transport.items<LandUseProps>('nutzung', bbox, limits.landUse, deadline),
       ])
       const site: AlkisSite = {
         parcels: parcels.features ?? [],
@@ -218,3 +247,11 @@ export class AlkisSource {
 }
 
 export const alkisSource = new AlkisSource()
+
+/**
+ * Eigene Instanz für die 3D-Nachbarschaft. Getrennter Cache, weil der
+ * Schlüssel die Grenzen enthält — und getrennt auch deshalb, weil diese
+ * Abfrage im Hintergrund läuft und warten darf, während die Analyse es nicht
+ * darf.
+ */
+export const worldAlkisSource = new AlkisSource()

@@ -22,11 +22,21 @@ import {
   type CityStyle, type Neighbourhood, type WorldDetail,
 } from '@/lib/world'
 import { worldOsmSource } from '@/lib/composer/sources/overpass'
+import { worldAlkisSource, WORLD_LIMITS } from '@/lib/composer/sources/alkis'
+import { extractCadastreBuildings, extractParcels, parcelAtPoint } from '@/lib/composer/resolvers/alkisResolver'
+import { withoutOwnParcel, withoutOwnWithin, worldBuildingsFromCadastre } from '@/lib/composer/resolvers/alkisWorld'
 import { extractBuildings, extractPois, extractRoads, pickOwnBuilding } from '@/lib/composer/resolvers/osmResolver'
-import { plainFrame } from '@/lib/composer/frame'
+import { plainFrame, polygonToLocal } from '@/lib/composer/frame'
 import type { PlanGeo } from '@/types'
 
 export type WorldSource = 'generated' | 'osm'
+
+/**
+ * Radius der Katasterabfrage für die Nachbarschaft. Passt zum weiten
+ * OSM-Radius (`WORLD_RADII.buildingM`), damit beide Quellen dasselbe Gebiet
+ * beschreiben — sonst endete die Bebauung mitten in der Straße.
+ */
+const WORLD_ALKIS_RADIUS_M = 240
 
 export interface NeighbourhoodResult {
   world: Neighbourhood
@@ -74,17 +84,61 @@ export function useNeighbourhood(input: UseNeighbourhoodInput): NeighbourhoodRes
     void (async () => {
       try {
         const at = { lat: geo.lat, lng: geo.lng }
-        const result = await worldOsmSource.fetchSite(at, ac.signal)
-        if (run !== runRef.current || !result) return
+        // Beide Quellen parallel. Sie beantworten verschiedene Fragen und
+        // dürfen sich nicht gegenseitig aufhalten: OSM kennt die
+        // Straßen*achsen*, das Kataster kennt **jedes** Gebäude. Nacheinander
+        // addierten sich nur ihre Wartezeiten.
+        //
+        // Das Kataster darf ausfallen, ohne die Nachbarschaft zu verhindern —
+        // außerhalb von NRW gibt es dort schlicht nichts.
+        const [result, alkisSite] = await Promise.all([
+          worldOsmSource.fetchSite(at, ac.signal),
+          worldAlkisSource
+            .fetchSite(at, WORLD_ALKIS_RADIUS_M, ac.signal, WORLD_LIMITS)
+            .catch(() => undefined),
+        ])
+        if (run !== runRef.current) return
+        // Früher stand hier `if (!result) return`. Das war ein Kopplungsfehler:
+        // fällt Overpass aus — und es fällt regelmäßig aus —, wurde die ganze
+        // Nachbarschaft verworfen, obwohl das Kataster längst geantwortet
+        // hatte. Gemessen sind das 694 vermessene Gebäude, die zugunsten einer
+        // erfundenen Siedlung weggeworfen wurden.
+        if (!result && !alkisSite) return
 
         // Der Rahmen ist hier bewusst nordausgerichtet und im Plan-Mittelpunkt
         // verankert: die 3D-Szene rechnet in Weltmetern um den Plan herum, und
         // die Drehung des Grundstücks steckt bereits im Plan selbst.
         const frame = plainFrame(at)
         const reference = { x: 0, y: 0 }
-        const buildings = extractBuildings(result, frame, undefined)
-        const roads = extractRoads(result, frame, reference)
-        const pois = extractPois(result, frame, reference)
+        const osmBuildings = result ? extractBuildings(result, frame, undefined) : []
+        const roads = result ? extractRoads(result, frame, reference) : []
+        const pois = result ? extractPois(result, frame, reference) : []
+
+        // Umriss vom Kataster, Aufbau von OSM.
+        //
+        // OSM erfasst Gebäude freiwillig und daher lückenhaft; in einem
+        // Wohngebiet fehlen regelmäßig ganze Straßenzüge, und die Lücken sehen
+        // in der 3D-Ansicht aus wie Wiese. ALKIS kennt jeden Baukörper. Was
+        // OSM besser weiß — Geschosszahl, Dachform, Material — wird über die
+        // Lage zugeordnet und übernommen.
+        const cadastre = alkisSite ? extractCadastreBuildings(alkisSite) : []
+        let fromCadastre = cadastre.length > 0
+          ? worldBuildingsFromCadastre(cadastre, frame, osmBuildings, reference)
+          : []
+
+        // Das eigene Grundstück gehört dem Plan, nicht der Nachbarschaft.
+        // Sonst stünde jeder Baukörper zweimal — einmal gezeichnet, einmal aus
+        // dem Kataster, minimal versetzt. Maßgeblich ist die Flurstücksgrenze,
+        // nicht die Entfernung: an der Kolpingstr. 9 liegt die Garagenzeile
+        // näher am Anker als das Wohnhaus.
+        if (fromCadastre.length > 0 && alkisSite) {
+          const own = parcelAtPoint(at, extractParcels(alkisSite))
+          fromCadastre = own
+            ? withoutOwnParcel(fromCadastre, polygonToLocal(frame, own.ring))
+            : withoutOwnWithin(fromCadastre, reference, 12)
+        }
+
+        const buildings = fromCadastre.length > osmBuildings.length ? fromCadastre : osmBuildings
         if (buildings.length === 0 && roads.length === 0) return
 
         // Die Quelle liefert Meter relativ zum Anker; die Szene erwartet sie
@@ -104,11 +158,17 @@ export function useNeighbourhood(input: UseNeighbourhoodInput): NeighbourhoodRes
           buildings: shifted,
           roads: shiftedRoads,
           pois: shiftedPois,
-          ownId: pickOwnBuilding(buildings)?.osmId,
+          // Beim Katasterweg ist das eigene Grundstück bereits herausgefiltert;
+          // OSM braucht die Kennung weiterhin.
+          ownId: buildings === fromCadastre ? undefined : pickOwnBuilding(buildings)?.osmId,
           seed: seedForPlan(planId, style),
         })
         // Ohne Straßen und ohne Häuser wäre die echte Welt ärmer als die
         // erzeugte — dann lieber bei der Annahme bleiben.
+        // Ohne Häuser **und** ohne Straßen wäre die echte Welt ärmer als die
+        // erzeugte. Mit echten Häusern und ohne Straßen ist sie es nicht: der
+        // Luftbild-Boden zeigt die Straßen ohnehin, und vermessene Gebäude
+        // schlagen erfundene.
         if (world.houses.length === 0 && world.network.segments.length === 0) return
         if (run === runRef.current) setOsmWorld(world)
       } catch {
