@@ -1311,6 +1311,26 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
           <planeGeometry args={[size, size]} />
           <meshStandardMaterial
             map={groundTexture}
+            /*
+             * Tageszeit-Tönung — der Grund, warum der Boden nachts weiß leuchtete.
+             *
+             * Jedes andere Material dieser Szene bekommt seine Grundfarbe über
+             * `dim()` mit `daylightScale` multipliziert (nachts 0,07). Der
+             * Luftbild-Boden hatte gar keine Grundfarbe, nur die Textur — und
+             * `color` steht bei three standardmäßig auf Weiß, wirkt also als
+             * neutraler Faktor 1. Zusammen mit der Studio-IBL, die nachts noch
+             * mit 35 % leuchtet, ergab das eine strahlend weiße Platte unter
+             * einer stockdunklen Nachtszene.
+             *
+             * Nicht ganz bis auf `daylightScale` hinunter: das Luftbild ist bei
+             * Tageslicht aufgenommen und bringt seine eigene Helligkeit mit.
+             * Der Exponent dämpft die Kurve nur leicht, damit der Boden nachts
+             * wirklich dunkel wird — nachgerechnet mit der IBL, die dann noch
+             * mit 35 % leuchtet: 0,07^0,75 ≈ 0,14, also rund 5 % Resthelligkeit.
+             * Der Boden verschwindet damit nicht ganz; man soll noch erkennen,
+             * wo man steht.
+             */
+            color={new THREE.Color().setScalar(Math.max(0.08, daylightScale ** 0.75))}
             // Beidseitig: eine einseitige Ebene ist von unten unsichtbar, und
             // dann schaut man durch den Boden hindurch in die Szene.
             side={THREE.DoubleSide}
