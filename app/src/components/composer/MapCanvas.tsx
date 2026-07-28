@@ -9,6 +9,7 @@ import {
   SeededRng,
 } from '@/lib/composer'
 import { lonToTileX, latToTileY, tileGroundMeters } from '@/lib/composer/onlineProvider'
+import type { ImageryLayer } from '@/lib/composer/imagery'
 
 /**
  * MapCanvas — the interactive, offline "satellite" surface.
@@ -29,22 +30,61 @@ export interface MapCanvasProps {
   onTap: (p: GeoPoint) => void
   onAddPolygonPoint: (p: GeoPoint) => void
   className?: string
-  /** Real imagery source (tile URL builder). Null/absent → synthetic aerial. */
-  imagery?: { tileUrl: (z: number, x: number, y: number) => string } | null
+  /**
+   * Real imagery, bottom layer first. The global layer is the base; a regional
+   * orthophoto paints over it and shows the base through its transparency
+   * wherever the survey does not reach. Null/absent → synthetic aerial.
+   */
+  imagery?: ImageryLayer[] | null
+  /**
+   * Welche Ebenen an dieser Stelle tatsächlich Pixel geliefert haben. Erst
+   * damit darf die Oberfläche eine Quelle benennen.
+   */
+  onCoverage?: (covered: ReadonlySet<string>) => void
+}
+
+/**
+ * Hat diese Kachel Inhalt, oder ist sie das transparente Nichts jenseits der
+ * Landesgrenze? Acht mal acht Stichproben genügen: ein Luftbild ist überall
+ * deckend, eine Lücke überall durchsichtig.
+ *
+ * Schlägt das Auslesen fehl — kein Canvas-Backend, CORS-Verweigerung —, gilt
+ * die Kachel als vorhanden. Ein falsch gemeldeter Treffer kostet ein Etikett,
+ * ein falsch gemeldeter Ausfall würde eine echte Quelle verschweigen.
+ */
+function hasPixels(img: HTMLImageElement): boolean {
+  try {
+    const probe = document.createElement('canvas')
+    probe.width = 8
+    probe.height = 8
+    const ctx = probe.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return true
+    ctx.drawImage(img, 0, 0, 8, 8)
+    const { data } = ctx.getImageData(0, 0, 8, 8)
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 8) return true
+    return false
+  } catch {
+    return true
+  }
 }
 
 // ── Real-imagery tiles ─────────────────────────────────────────────
-// Loaded 256px tiles, cached across renders/mounts. The synthetic aerial stays
+// Loaded tiles, cached across renders/mounts. The synthetic aerial stays
 // underneath as the loading fallback; tiles paint over it as they arrive.
+// The key carries the layer id — two sources share the same z/x/y grid, and
+// without it the finer layer would be served the coarser layer's pixels.
 interface ScreenTile { img: CanvasImageSource; x: number; y: number; s: number }
-const tileCache = new Map<string, { img: HTMLImageElement; ok: boolean }>()
+interface TileEntry { img: HTMLImageElement; ok: boolean; filled: boolean }
+const tileCache = new Map<string, TileEntry>()
 
 function collectTiles(
   view: MapView, w: number, h: number,
-  tileUrl: (z: number, x: number, y: number) => string,
+  layer: ImageryLayer,
   onLoaded: () => void,
+  /** Wird gesetzt, sobald eine Kachel dieser Ebene Inhalt zeigt. */
+  seen?: { filled: boolean },
 ): ScreenTile[] {
-  const z = Math.max(3, Math.min(19, Math.round(view.zoom)))
+  const z = Math.max(3, Math.min(layer.maxZoom, Math.round(view.zoom)))
   const n = 2 ** z
   const groundM = tileGroundMeters(view.center.lat, z)
   const px = Math.min(w, h) / spanForZoom(view.zoom) // screen px per ground metre
@@ -59,17 +99,22 @@ function collectTiles(
       const ty = Math.floor(cyT) + dy
       if (ty < 0 || ty >= n) continue
       const wx = ((tx % n) + n) % n // wrap longitude
-      const key = `${z}/${wx}/${ty}`
+      const key = `${layer.id}/${z}/${wx}/${ty}`
       let entry = tileCache.get(key)
       if (!entry) {
         const img = new Image()
         img.crossOrigin = 'anonymous'
-        entry = { img, ok: false }
+        entry = { img, ok: false, filled: false }
         tileCache.set(key, entry)
-        img.onload = () => { entry!.ok = true; onLoaded() }
-        img.src = tileUrl(z, wx, ty)
+        img.onload = () => {
+          entry!.ok = true
+          entry!.filled = layer.partial ? hasPixels(img) : true
+          onLoaded()
+        }
+        img.src = layer.tileUrl(z, wx, ty)
       }
       if (entry.ok) {
+        if (entry.filled && seen) seen.filled = true
         out.push({ img: entry.img, x: w / 2 + (tx - cxT) * s, y: h / 2 + (ty - cyT) * s, s })
       }
     }
@@ -306,12 +351,27 @@ export function MapCanvas({
   onAddPolygonPoint,
   className,
   imagery,
+  onCoverage,
 }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sizeRef = useRef({ w: 0, h: 0 })
   const dragRef = useRef<{ x: number; y: number; moved: boolean; t: number } | null>(null)
   // Tile onload fires after this render pass — repaint through the latest render.
   const renderRef = useRef<() => void>(() => {})
+
+  // Der Deckungsbericht läuft über eine Referenz: so muss `render` nicht bei
+  // jedem neuen Callback des Elternteils neu gebaut werden. Gemeldet wird nur
+  // eine echte Änderung — sonst löste jedes Zeichnen einen Zustandswechsel aus,
+  // der sofort wieder zeichnen ließe.
+  const lastCoverage = useRef('')
+  const onCoverageRef = useRef(onCoverage)
+  onCoverageRef.current = onCoverage
+  const coverageRef = useRef((covered: ReadonlySet<string>) => {
+    const key = [...covered].sort().join('|')
+    if (key === lastCoverage.current) return
+    lastCoverage.current = key
+    onCoverageRef.current?.(covered)
+  })
 
   const render = useCallback(() => {
     const canvas = canvasRef.current
@@ -326,9 +386,15 @@ export function MapCanvas({
     if (!ctx) return
     const { w, h } = sizeRef.current
     if (w === 0 || h === 0) return
-    const tiles = imagery
-      ? collectTiles(view, w, h, imagery.tileUrl, () => renderRef.current())
-      : []
+    // One pass per layer, bottom first — the stack is the drawing order.
+    const covered = new Set<string>()
+    const tiles = (imagery ?? []).flatMap((layer) => {
+      const seen = { filled: false }
+      const got = collectTiles(view, w, h, layer, () => renderRef.current(), seen)
+      if (seen.filled) covered.add(layer.id)
+      return got
+    })
+    coverageRef.current(covered)
     ctx.save()
     ctx.scale(canvas.width / w, canvas.height / h)
     drawAerial(ctx, view, w, h, pin, polygon, tiles)

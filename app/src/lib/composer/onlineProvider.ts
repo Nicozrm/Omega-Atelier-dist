@@ -5,23 +5,20 @@ import { parcelAt } from './world'
 /**
  * onlineProvider.ts — the REAL satellite view.
  *
- * Drops into the composer's {@link MapProvider} slot: geocoding via the public
- * Nominatim (OpenStreetMap) endpoint, imagery via **Esri World Imagery** tiles.
- * Esri permits displaying this service with attribution; Google's tiles are
- * ToS-restricted to their own SDKs, which is why Esri is the imagery source.
- * The browser fetches tiles directly — no key, no server, no build step.
+ * Drops into the composer's {@link MapProvider} slot and owns **geocoding**
+ * (public Nominatim) plus the deterministic capture descriptor. Which pixels
+ * get shown is no longer decided here — that moved to `imagery.ts`, because
+ * the answer depends on *where* the user is looking, not on which provider is
+ * selected. Germany has 10 cm official orthophotos; a global mosaic is only
+ * the fallback.
  *
  * Analysis stays deterministic: `capture` derives the seed from the same world
  * hash the offline provider uses, so the downstream detectors behave
  * identically no matter which provider produced the image descriptor.
  */
 
-export const ESRI_ATTRIBUTION = 'Bilder © Esri · Maxar · Earthstar Geographics'
-
-/** Slippy-tile URL for Esri World Imagery (z/y/x order!). */
-export function esriTileUrl(z: number, x: number, y: number): string {
-  return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`
-}
+export { ESRI_ATTRIBUTION, esriTileUrl } from './imagery'
+import { ESRI_ATTRIBUTION } from './imagery'
 
 // ── Web-mercator tile math (float — callers floor for indices) ──
 export function lonToTileX(lng: number, z: number): number {
@@ -44,7 +41,8 @@ interface NominatimHit { display_name: string; lat: string; lon: string; importa
 
 export class EsriWorldImageryProvider implements MapProvider {
   readonly id = 'esri-world-imagery'
-  readonly label = 'Satellit (Esri World Imagery)'
+  readonly label = 'Echtes Luftbild'
+  /** Rückfall-Nennung; im Kartenbild gewinnt die Nennung der obersten Ebene. */
   readonly attribution = ESRI_ATTRIBUTION
   readonly online = true
 

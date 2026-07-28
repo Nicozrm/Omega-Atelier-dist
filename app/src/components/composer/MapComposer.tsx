@@ -1,12 +1,17 @@
-import { Plus, Minus, Navigation, Crosshair, PenLine, Trash2, Sparkles, MapPin, Satellite } from 'lucide-react'
+import { useState } from 'react'
+import { Plus, Minus, Navigation, Crosshair, PenLine, Trash2, Sparkles, MapPin, Satellite, ShieldCheck } from 'lucide-react'
 import { useComposerStore } from '@/store/useComposerStore'
 import { formatGeo } from '@/lib/composer'
 import { defaultMapProvider } from '@/lib/composer/mapProvider'
-import { esriProvider, esriTileUrl } from '@/lib/composer/onlineProvider'
+import { esriProvider } from '@/lib/composer/onlineProvider'
+import { imageryStack, topLayer } from '@/lib/composer/imagery'
 import { MapCanvas } from './MapCanvas'
 
 const MIN_ZOOM = 15
 const MAX_ZOOM = 20
+
+/** Stabile Referenz — ein neues Set je Render würde `MapCanvas` neu zeichnen. */
+const EMPTY: ReadonlySet<string> = new Set()
 
 /**
  * MapComposer — wizard step 2. Frames the {@link MapCanvas} with the map
@@ -31,8 +36,17 @@ export function MapComposer() {
   const provider = useComposerStore((s) => s.provider)
   const setProvider = useComposerStore((s) => s.setProvider)
   const satellite = provider.online
+  const [covered, setCovered] = useState<ReadonlySet<string>>(EMPTY)
 
   if (!view) return null
+
+  // Welche Bilder gezeigt werden, hängt am Ort, nicht am Anbieter: wo eine
+  // amtliche Befliegung existiert, liegt sie über der globalen Ebene. Genannt
+  // wird aber erst, was die Karte tatsächlich gezeichnet hat — `covered`
+  // kommt vom Zeichnen zurück, nicht aus einer Annahme über Landesgrenzen.
+  const stack = satellite ? imageryStack(view.center) : null
+  const best = stack ? topLayer(stack, covered) : null
+  const official = !!best && best.id !== 'esri-world-imagery'
 
   const zoom = (dir: 1 | -1) =>
     setView({ ...view, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, view.zoom + dir)) })
@@ -53,20 +67,31 @@ export function MapComposer() {
           onTap={setPin}
           onAddPolygonPoint={addPolygonPoint}
           className="h-full w-full"
-          imagery={satellite ? { tileUrl: esriTileUrl } : null}
+          imagery={stack}
+          onCoverage={setCovered}
         />
 
         {/* Imagery attribution — required while real tiles are shown */}
-        {satellite && (
+        {best && (
           <div className="pointer-events-none absolute bottom-12 right-3 rounded-full bg-black/45 px-2.5 py-0.5 text-[10px] text-white/80 backdrop-blur-sm">
-            {provider.attribution}
+            {best.attribution}
           </div>
         )}
 
         {/* Hint */}
-        <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-1.5 rounded-full border border-[color:var(--border)] bg-[color:var(--glass-bg)] px-3 py-1.5 text-xs text-[color:var(--fg)] backdrop-blur-md">
-          <Crosshair size={13} className="text-[color:var(--accent-bright)]" />
-          {drawing ? 'Ecken deines Grundstücks antippen' : 'Tippe exakt auf dein Grundstück'}
+        <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-1.5">
+          <div className="flex items-center gap-1.5 rounded-full border border-[color:var(--border)] bg-[color:var(--glass-bg)] px-3 py-1.5 text-xs text-[color:var(--fg)] backdrop-blur-md">
+            <Crosshair size={13} className="text-[color:var(--accent-bright)]" />
+            {drawing ? 'Ecken deines Grundstücks antippen' : 'Tippe exakt auf dein Grundstück'}
+          </div>
+          {/* Amtliche Befliegung ist der Normalfall in Deutschland, nicht die
+              Ausnahme — deshalb wird sie benannt, wenn sie greift. */}
+          {official && best && (
+            <div className="flex items-center gap-1.5 rounded-full border border-[color:var(--border-accent)] bg-[rgba(199,162,78,0.14)] px-3 py-1 text-[11px] text-[color:var(--fg)] backdrop-blur-md">
+              <ShieldCheck size={12} className="text-[color:var(--accent-bright)]" />
+              {best.label}
+            </div>
+          )}
         </div>
 
         {/* Controls */}
@@ -91,8 +116,8 @@ export function MapComposer() {
           <button
             className={ctrlBtn}
             onClick={() => setProvider(satellite ? defaultMapProvider : esriProvider)}
-            aria-label={satellite ? 'Offline-Karte' : 'Echte Satellitenansicht'}
-            title={satellite ? 'Zur Offline-Karte wechseln' : 'Echte Satellitenansicht (Esri)'}
+            aria-label={satellite ? 'Offline-Karte' : 'Echtes Luftbild'}
+            title={satellite ? 'Zur Offline-Karte wechseln' : 'Echtes Luftbild (amtlich, wo verfügbar)'}
           >
             <Satellite size={15} className={satellite ? 'text-[color:var(--accent-bright)]' : undefined} />
           </button>

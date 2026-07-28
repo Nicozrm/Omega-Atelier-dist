@@ -404,7 +404,50 @@ Diese drei Punkte gehören dir, nicht mir:
 | ALKIS NRW (OpenGeodata) | dl-de/zero-2.0 | frei, ohne Namensnennungspflicht |
 | LoD2 NRW | dl-de/zero-2.0 | CityGML, kachelweise |
 | DGM1 NRW | dl-de/zero-2.0 | 1 m Raster |
-| Esri World Imagery | Esri-Nutzungsbedingungen | Anzeige mit Attribution erlaubt — bereits umgesetzt |
+| Esri World Imagery | Esri-Nutzungsbedingungen | Anzeige mit Attribution erlaubt — globale Grundlage |
+| DOP NRW (`wms_nw_dop`) | dl-de/zero-2.0 | **10 cm**, WMS, offenes CORS — umgesetzt |
+| DOP Niedersachsen (`dop_wms`) | dl-de/zero-2.0 | 20 cm, WMS — umgesetzt |
+| DOP Sachsen (`wms_geosn_dop-rgb`) | dl-de/zero-2.0 | 20 cm, WMS — umgesetzt |
 
-Google- und Apple-Kacheln sind bewusst nicht dabei: ihre Nutzungsbedingungen
-binden sie an die jeweiligen SDKs. Deshalb Esri.
+### Warum nicht Google
+
+Die Google Maps Platform Terms binden die Kacheln an Googles **eigene** SDKs
+und APIs. Untersagt ist damit genau das, was diese Anwendung tut: Kacheln in
+einen fremden Renderer laden, Inhalte daraus ableiten und speichern, Bilder
+zwischenspeichern. Ein API-Schlüssel ändert daran nichts — er erlaubt die
+Nutzung *innerhalb* der SDKs. Für Apple gilt dasselbe. Das Risiko ist nicht
+die Abmahnung, sondern die Abschaltung, und darauf lässt sich kein
+kommerzielles Produkt bauen.
+
+### Warum die Frage falsch gestellt war
+
+Für Deutschland ist Google ohnehin nicht die beste Quelle. Die
+Landesvermessungen veröffentlichen amtliche Orthophotos als Open Data — in
+NRW mit **10 cm** Bodenauflösung, also feiner als Googles Satellitenansicht,
+unter dl-de/zero-2.0 („jede Nutzung ohne Einschränkungen oder Bedingungen"),
+ohne Schlüssel, ohne Anmeldung, mit offenem CORS.
+
+Der eigentliche Gewinn ist nicht die Auflösung, sondern die Herkunft: DOP und
+ALKIS stammen aus derselben Landesvermessung, im selben Bezugssystem, aus
+derselben Befliegung. Grundstücksgrenze und Luftbild passen deshalb
+**geometrisch aufeinander**; bei einem globalen Bildmosaik aus fremder Quelle
+wäre das Zufall.
+
+### Wie die Ebenen gestapelt werden
+
+Regionale Befliegungen enden an der Landesgrenze — und eine Landesgrenze lässt
+sich nicht als Rechteck beschreiben. Der erste Entwurf hat es trotzdem
+versucht (feinste Hülle gewinnt) und ist an Hannover gescheitert: der Ort
+liegt innerhalb der von NRW gemeldeten Hülle, also gewann die 10-cm-Ebene und
+lieferte nichts, während die zuständige 20-cm-Ebene nicht einmal abgefragt
+wurde.
+
+Deshalb entscheidet nicht die Hülle, sondern das Bild. Alle Kandidaten werden
+gestapelt (global unten, dann grob nach fein), die regionalen als PNG mit
+Transparenz. Wo eine Ebene nichts hat, scheint die darunter durch — die
+Grenze zeichnet der Dienst selbst. Und genannt wird nur, was die Karte
+tatsächlich gezeichnet hat: `MapCanvas` tastet den Alphakanal der geladenen
+Kachel ab und meldet die Deckung zurück. Dieselbe Regel wie überall sonst in
+der Pipeline — **beobachtet schlägt angenommen**.
+
+Geprüft von `npm run verify:imagery`, einschließlich des Hannover-Falls.
