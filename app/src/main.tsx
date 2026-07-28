@@ -9,6 +9,20 @@ import { installMotion } from '@/lib/motion'
 import { installSound } from '@/lib/sound'
 import '@/styles/index.css'
 
+/**
+ * Build-Stempel. Ohne ihn lässt sich nicht beantworten, ob ein Gerät den
+ * aktuellen Stand sieht — genau die Frage, die nach jedem Deploy aufkommt,
+ * weil der Service Worker das alte Bundle noch minutenlang weiterliefert.
+ * `__OMEGA_BUILD__` in der Konsole beantwortet sie in fünf Sekunden.
+ */
+const BUILD_STAMP = {
+  builtAt: __BUILD_TIME__,
+  commit: __BUILD_COMMIT__,
+}
+;(window as unknown as Record<string, unknown>).__OMEGA_BUILD__ = BUILD_STAMP
+console.info(`%cOMEGA Atelier%c ${BUILD_STAMP.commit} · ${BUILD_STAMP.builtAt}`,
+  'font-weight:600;color:#C7A24E', 'color:inherit')
+
 // Resolve the render quality tier once, before anything reads it.
 initQuality()
 // Recover from stale lazy-chunk loads after a PWA redeploy (blank/black screen).

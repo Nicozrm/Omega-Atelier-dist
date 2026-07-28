@@ -2,8 +2,23 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'node:path'
+import { execSync } from 'node:child_process'
+
+/**
+ * Kurzer Commit-Hash, damit ein Build eindeutig zuordenbar ist.
+ * `OMEGA_COMMIT` hat Vorrang, damit auch ein Build außerhalb des Repos
+ * (oder in einer CI ohne Git-Historie) einen sinnvollen Stempel bekommt.
+ */
+function gitCommit(): string {
+  if (process.env.OMEGA_COMMIT) return process.env.OMEGA_COMMIT
+  try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim() } catch { return 'unknown' }
+}
 
 export default defineConfig({
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')),
+    __BUILD_COMMIT__: JSON.stringify(gitCommit()),
+  },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
   },
