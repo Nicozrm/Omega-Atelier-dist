@@ -5618,10 +5618,11 @@ function GhostFloors({ floors, activeId }: { floors: Floor[]; activeId: string }
   return <Static>{built.nodes}</Static>
 }
 
-function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHouse, stackView, houseStyle, residents, onResidentStatus, season, precip, cityStyle, streetLife, onWorldSource }: {
+function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHouse, stackView, houseStyle, residents, onResidentStatus, season, precip, cityStyle, streetLife, onWorldSource, onGroundStatus }: {
   env: EnvironmentState; floorVariant: FloorVariant; wallMaterialId: string; walkMode: boolean; envPreset: EnvPreset; showHouse: boolean;
   stackView: boolean; houseStyle: HouseStyle; residents: number; onResidentStatus?: (s: ResidentStatus) => void; season: Season; precip: Precip;
   cityStyle: CityStyle; streetLife: boolean; onWorldSource?: (s: WorldSource) => void;
+  onGroundStatus?: (note: string) => void;
 }) {
   const doc = usePlanStore((s) => s.doc)
   const floor = useMemo(() => doc?.floors.find((f) => f.id === doc?.activeFloorId), [doc])
@@ -5727,6 +5728,13 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
     // bestellen bringt keine Information, nur Bytes und Risiko.
     pixels: Math.round((world.extentM * 2.4) / (ULTRA ? 0.10 : 0.16)),
   })
+  // Nach oben melden, damit die Oberfläche es anzeigen kann. Auf einem Telefon
+  // gibt es keine Konsole, und ein stiller Fehlschlag sieht aus wie Rasen.
+  const groundNote = ortho.photo
+    ? `${ortho.photo.source.label} · ${ortho.photo.cmPerPixel} cm/px`
+    : ortho.loading ? 'Luftbild wird geladen …'
+    : ortho.reason ?? 'kein Luftbild'
+  useEffect(() => { onGroundStatus?.(groundNote) }, [groundNote, onGroundStatus])
 
   return (
     <>
@@ -6134,6 +6142,33 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
   const pickCityStyle = (s: CityStyle) => { setCityStyle(s); saveCityStyle(s) }
   // Zeigt die Ansicht die vermessene Nachbarschaft oder die angenommene?
   const [worldSource, setWorldSource] = useState<WorldSource>('generated')
+  /**
+   * Woher der Boden kommt — oder warum er fehlt.
+   *
+   * Sichtbar in der Oberfläche und nicht nur in der Konsole: ein
+   * fehlgeschlagener Luftbildabruf sieht aus wie erzeugter Rasen, und auf
+   * einem Telefon lässt sich das sonst überhaupt nicht nachsehen.
+   */
+  const [groundNote, setGroundNote] = useState('')
+  /**
+   * Der Bodenstatus wird innerhalb des R3F-Baums ermittelt; ein Callback über
+   * diese Grenze hat sich als unzuverlässig erwiesen (der Effekt lief, die
+   * Anzeige blieb leer). `__OMEGA_GROUND__` schreibt die Quellenschicht ohnehin
+   * — beides zu haben wäre doppelte Wahrheit, also ist genau das hier die
+   * einzige. Ein Blick pro Sekunde reicht für eine Statusanzeige und kostet
+   * nichts.
+   */
+  useEffect(() => {
+    const read = () => {
+      const g = (window as unknown as Record<string, unknown>).__OMEGA_GROUND__ as
+        | { quelle?: string; cmProPixel?: number; grund?: string } | undefined
+      if (!g) return
+      setGroundNote(g.grund ?? (g.quelle ? `${g.quelle} · ${g.cmProPixel} cm/px` : ''))
+    }
+    read()
+    const t = window.setInterval(read, 1000)
+    return () => window.clearInterval(t)
+  }, [])
   const [contextLost, setContextLost] = useState(false)
   const [diag, setDiag] = useState<DiagReport | null>(null)
   const { can } = useTier()
@@ -6597,7 +6632,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             <CaptureHelper captureRef={captureRef} />
             {!walkMode && <CinematicDirector req={flyReq} hud={tourHud} onTourEnd={endTour} />}
             <ToneMapController photo={photoLook} />
-            <Scene env={env} floorVariant={floorVariant} wallMaterialId={wallMaterialId} walkMode={walkMode} envPreset={envPreset} showHouse={showHouse} stackView={stackView} houseStyle={houseStyle} residents={residents} onResidentStatus={setResidentStatus} season={season} precip={precip} cityStyle={cityStyle} streetLife={streetLife} onWorldSource={setWorldSource} />
+            <Scene env={env} floorVariant={floorVariant} wallMaterialId={wallMaterialId} walkMode={walkMode} envPreset={envPreset} showHouse={showHouse} stackView={stackView} houseStyle={houseStyle} residents={residents} onResidentStatus={setResidentStatus} season={season} precip={precip} cityStyle={cityStyle} streetLife={streetLife} onWorldSource={setWorldSource} onGroundStatus={setGroundNote} />
             {/* Mobile keeps the cheap pass (SMAA + grading, no MSAA target):
                 the black canvas turned out to be the reduced-motion tier, not
                 post-processing, so there is no reason to give up edge quality
@@ -6754,6 +6789,16 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
           <Camera size={12} className="text-[color:var(--accent)]" />
           PBR · Texturen · Soft Shadows · ACES
         </div>
+        )}
+
+        {/* Herkunft des Bodens. Bewusst auf **allen** Größen sichtbar: ein
+            fehlendes Luftbild sieht aus wie erzeugter Rasen, und auf einem
+            Telefon gibt es keine Konsole, in der man nachsehen könnte. */}
+        {!preview && groundNote && (
+          <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[70%] items-center gap-1.5 rounded-full border border-[color:var(--border)] glass px-2.5 py-1 text-[10px] leading-tight text-[color:var(--muted)]">
+            <Layers size={11} className="shrink-0 text-[color:var(--accent-bright)]" />
+            <span className="truncate">Boden: {groundNote}</span>
+          </div>
         )}
 
         {/* Virtual-residents status — a quiet live read-out of what the current

@@ -242,32 +242,40 @@ function probeHasPixels(img: HTMLImageElement): boolean {
  * Pixel liefert. `undefined`, wo keiner zuständig ist — dann bleibt der
  * erzeugte Boden stehen. Wie überall in dieser Pipeline ist Fehlen kein Fehler.
  */
+/**
+ * Ergebnis eines Luftbildabrufs — Erfolg **oder** ein benennbarer Grund.
+ *
+ * Bewusst kein `undefined` für den Fehlschlag. Ein fehlendes Luftbild sieht in
+ * der Szene aus wie erzeugter Rasen, und das ist ein völlig plausibler
+ * Anblick; ohne mitgelieferten Grund lässt sich von außen nicht sagen, ob der
+ * Ort keine Befliegung hat, der Dienst streikt oder die Anfrage falsch war.
+ * Der Grund gehört deshalb in die Oberfläche, nicht nur in die Konsole — auf
+ * einem Telefon gibt es keine Konsole.
+ */
+export type OrthophotoResult =
+  | { ok: true; photo: Orthophoto; image: HTMLImageElement }
+  | { ok: false; reason: string }
+
 export async function resolveOrthophoto(
   req: OrthophotoRequest,
   signal?: AbortSignal,
-): Promise<{ photo: Orthophoto; image: HTMLImageElement } | undefined> {
+): Promise<OrthophotoResult> {
   const candidates = orthophotoCandidates(req)
   if (candidates.length === 0) {
-    note(req, 'kein Dienst deckt diesen Ort ab')
-    return undefined
+    return fail(req, 'kein amtliches Luftbild für diesen Ort')
   }
+  let last = 'unbekannt'
   for (const photo of candidates) {
     const probe = await loadImage(coverageProbeUrl(photo, req.at), signal)
-    if (signal?.aborted) return undefined
-    if (!probe) { note(req, `${photo.source.id}: Deckungsabzug nicht ladbar (CORS oder Dienst)`) ; continue }
-    if (!probeHasPixels(probe)) { note(req, `${photo.source.id}: hier keine Befliegung`) ; continue }
+    if (signal?.aborted) return { ok: false, reason: 'abgebrochen' }
+    if (!probe) { last = `${photo.source.id}: Abzug blockiert (CORS/Dienst)`; continue }
+    if (!probeHasPixels(probe)) { last = `${photo.source.id}: hier keine Befliegung`; continue }
     const image = await loadOrthophoto(photo, signal)
-    if (!image) {
-      note(req, `${photo.source.id}: Bild nicht ladbar (${photo.pixels} px)`)
-      continue
-    }
-    if (!hasDetail(image)) {
-      note(req, `${photo.source.id}: Bild ist einfarbig — der Dienst hat eine leere Fläche geliefert`)
-      continue
-    }
-    return { photo, image }
+    if (!image) { last = `${photo.source.id}: Bild nicht ladbar (${photo.pixels} px)`; continue }
+    if (!hasDetail(image)) { last = `${photo.source.id}: Bild einfarbig (Dienst lieferte leere Fläche)`; continue }
+    return { ok: true, photo, image }
   }
-  return undefined
+  return fail(req, last)
 }
 
 /**
@@ -278,7 +286,7 @@ export async function resolveOrthophoto(
  * Ohne diese Meldung lässt sich von außen nicht unterscheiden, ob der Ort
  * keine Befliegung hat, der Dienst streikt oder die Anfrage zu groß war.
  */
-function note(req: OrthophotoRequest, reason: string): void {
+function fail(req: OrthophotoRequest, reason: string): { ok: false; reason: string } {
   const w = globalThis as unknown as Record<string, unknown>
   w.__OMEGA_GROUND__ = {
     ergebnis: 'kein Luftbild',
@@ -291,4 +299,5 @@ function note(req: OrthophotoRequest, reason: string): void {
     console.info('%cOMEGA Boden%c kein Luftbild — ' + reason,
       'font-weight:600;color:#C7A24E', 'color:inherit')
   }
+  return { ok: false, reason }
 }

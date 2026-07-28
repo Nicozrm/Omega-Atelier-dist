@@ -30,6 +30,8 @@ export interface OrthophotoGround {
   /** Für die Nennung im Bild — die Lizenz verlangt sie nicht, der Anstand schon. */
   attribution?: string
   photo?: Orthophoto
+  /** Warum kein Luftbild vorliegt — für die Anzeige, nicht nur die Konsole. */
+  reason?: string
   loading: boolean
 }
 
@@ -54,7 +56,20 @@ export function useOrthophotoGround(input: UseOrthophotoGroundInput): Orthophoto
   useEffect(() => {
     const run = ++runRef.current
     if (!enabled || !geo) {
-      setState({ texture: null, loading: false })
+      // Ohne Ortsbezug wird gar nichts abgefragt — und genau das war bisher
+      // unsichtbar: die Szene zeigt erzeugten Rasen, was völlig plausibel
+      // aussieht, und niemand erfährt, dass dem Plan schlicht die Koordinate
+      // fehlt. Der häufigste Grund, und der einzige, den der Nutzer selbst
+      // beheben kann.
+      ;(window as unknown as Record<string, unknown>).__OMEGA_GROUND__ = {
+        ergebnis: 'kein Luftbild',
+        grund: geo ? 'Luftbild abgeschaltet' : 'Plan hat keinen Ortsbezug — im Composer setzen',
+      }
+      setState({
+        texture: null,
+        reason: geo ? 'abgeschaltet' : 'Plan hat keinen Ortsbezug',
+        loading: false,
+      })
       return
     }
     const ac = new AbortController()
@@ -66,8 +81,8 @@ export function useOrthophotoGround(input: UseOrthophotoGroundInput): Orthophoto
         ac.signal,
       )
       if (run !== runRef.current || ac.signal.aborted) return
-      if (!found) {
-        setState({ texture: null, loading: false })
+      if (!found.ok) {
+        setState({ texture: null, reason: found.reason, loading: false })
         return
       }
 
@@ -92,7 +107,7 @@ export function useOrthophotoGround(input: UseOrthophotoGroundInput): Orthophoto
         'font-weight:600;color:#C7A24E', 'color:inherit',
       )
       ;(window as unknown as Record<string, unknown>).__OMEGA_GROUND__ = {
-        quelle: found.photo.source.id,
+        quelle: found.photo.source.label,
         lizenz: found.photo.source.licence,
         bodenkanteM: found.photo.groundSizeM,
         pixel: found.photo.pixels,
