@@ -1,0 +1,41 @@
+{
+  "name": "omega-atelier",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/sync-media.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/sync-media.mjs",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "verify:parcel": "vite-node scripts/verify-parcel.ts",
+    "verify:osm": "vite-node scripts/verify-osm.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "9.114.3",
+    "@react-three/fiber": "8.17.10",
+    "@react-three/postprocessing": "2.16.3",
+    "@supabase/supabase-js": "2.108.2",
+    "clsx": "2.1.1",
+    "lucide-react": "0.456.0",
+    "postprocessing": "6.36.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.28.0",
+    "three": "0.169.0",
+    "three-stdlib": "2.33.0",
+    "zustand": "5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@types/three": "0.169.0",
+    "@vitejs/plugin-react": "4.3.3",
+    "typescript": "5.6.3",
+    "vite": "5.4.11",
+    "vite-plugin-pwa": "0.21.0"
+  }
+}

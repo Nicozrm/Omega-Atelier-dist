@@ -1,0 +1,12 @@
+// Barrel for `@/ui` — the module's public surface.
+export { Badge } from './Badge'
+export { Button } from './Button'
+export { Dialog } from './Dialog'
+export { Divider } from './Divider'
+export { IconButton } from './IconButton'
+export { InspectorSection } from './InspectorSection'
+export { Menu } from './Menu'
+export { SegmentedControl } from './SegmentedControl'
+export { Toolbar, ToolbarGroup } from './Toolbar'
+export { Tooltip } from './Tooltip'
+export { useModalA11y } from './useModalA11y'

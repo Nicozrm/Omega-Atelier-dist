@@ -1,0 +1,11 @@
+// Barrel for `@/lib/imageBlaster` — the module's public surface.
+export { analyseImage } from './analysis'
+export { downsample, estimateDepth, segmentMask } from './depth'
+export { buildBillboardMesh, buildExtrudeMesh, buildReliefMesh } from './mesh'
+export { fieldToPixels, normalMapFromDepth, roughnessMapFromImage } from './normals'
+export { floorObjectPlacement, largestRoom, nextWallPlacement, wallArtPlacement } from './placement'
+export { buildPointCloud, pointCloudToPLY } from './pointcloud'
+export type { PointCloudData } from './pointcloud'
+export { normalizeSettings } from './settingsSchema'
+export { DEFAULT_SETTINGS, PIPELINE_STAGES } from './types'
+export type { BlasterSettings, ImageAnalysis, MaterialSettings, MeshData, MeshMode, PipelineStageKey, PixelGrid, ScalarField, SegmentSource } from './types'

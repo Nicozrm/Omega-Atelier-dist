@@ -1,0 +1,13 @@
+// Barrel for `@/lib/composer` — the pipeline's public surface.
+export { ANALYSIS_CHECKLIST, AnalysisCanceledError } from './analysisEngine'
+export { composeProject } from './compose'
+export type { ComposeResult } from './compose'
+export { formatConfidence } from './confidenceEngine'
+export { formatGeo, geoToLocal, geocodeOffline, localToGeo, offsetGeo } from './geo'
+export { defaultMapProvider, spanForZoom } from './mapProvider'
+export type { MapProvider } from './mapProvider'
+export { PROVENANCE_SHORT } from './provenance'
+export type { Provenance } from './provenance'
+export { SeededRng } from './rng'
+export type { AnalysisProgress, AnalysisStatus, ConfidenceKey, GeoPoint, GeoResult, MapView, PhaseId, RoofShape } from './types'
+export { parcelsInBounds } from './world'
