@@ -5844,6 +5844,7 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
         season={season}
         rich={rich}
         groundTexture={ortho.texture}
+        sampleGround={ortho.sampleAt}
       />
 
       {/* Traffic and people. Off in walkthrough (the camera is inside anyway)

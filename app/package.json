@@ -18,7 +18,8 @@
     "verify:shadow-frustum": "vite-node scripts/verify-shadow-frustum.ts",
     "verify:dop": "vite-node scripts/verify-dop.ts",
     "verify:world": "vite-node scripts/verify-world.ts",
-    "overlay:check": "vite-node scripts/overlay-check.ts"
+    "overlay:check": "vite-node scripts/overlay-check.ts",
+    "verify:roofcolours": "vite-node scripts/verify-roofcolours.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",

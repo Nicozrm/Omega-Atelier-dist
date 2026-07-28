@@ -15,10 +15,18 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { resolveOrthophoto, type Orthophoto } from '@/lib/composer/sources/dop'
+import { medianColour, rgbToHex } from '@/lib/world/roofColours'
 import type { PlanGeo } from '@/types'
 
 export interface OrthophotoGround {
   texture: THREE.Texture | null
+  /**
+   * Liest die vorherrschende Farbe an einer Stelle der Szene, in Weltmetern
+   * relativ zum Bildmittelpunkt. Damit bekommt jedes Nachbardach die Farbe,
+   * die es tatsächlich hat — das Luftbild ist die Aufsicht auf genau diese
+   * Dächer.
+   */
+  sampleAt?: (x: number, z: number, radiusM?: number) => string | undefined
   /** Für die Nennung im Bild — die Lizenz verlangt sie nicht, der Anstand schon. */
   attribution?: string
   photo?: Orthophoto
@@ -91,10 +99,16 @@ export function useOrthophotoGround(input: UseOrthophotoGroundInput): Orthophoto
         cmProPixel: found.photo.cmPerPixel,
       }
 
+      // Einmal in ein Offscreen-Canvas zeichnen; danach ist jedes Ablesen ein
+      // reiner Speicherzugriff. Das Bild selbst wandert unverändert als Textur
+      // auf die GPU — hier geht es nur um die Farbwerte.
+      const sampler = makeSampler(found.image, found.photo.groundSizeM)
+
       setState({
         texture: tex,
         attribution: found.photo.source.attribution,
         photo: found.photo,
+        sampleAt: sampler,
         loading: false,
       })
     })()
@@ -112,4 +126,50 @@ export function useOrthophotoGround(input: UseOrthophotoGroundInput): Orthophoto
   useEffect(() => () => { lastTex.current?.dispose() }, [])
 
   return state
+}
+
+
+/**
+ * Baut den Farbleser über dem geladenen Luftbild.
+ *
+ * Die Umrechnung ist die Umkehrung der Bodenebene: das Bild deckt
+ * `groundSizeM` Meter ab, sein Mittelpunkt liegt im Plan-Mittelpunkt, Norden
+ * ist oben. In der Szene wächst z nach Süden, also wächst auch die Bildzeile
+ * mit z — dieselbe Zuordnung, mit der die Textur auf die Ebene kommt.
+ *
+ * Gibt `undefined` zurück, wenn das Auslesen scheitert (kein Canvas-Backend)
+ * oder die Stelle außerhalb des Bildes liegt. Dann bleibt die Farbe aus der
+ * Palette des Regionalstils — schlechter, aber nie falsch aussehend.
+ */
+function makeSampler(
+  image: HTMLImageElement,
+  groundSizeM: number,
+): ((x: number, z: number, radiusM?: number) => string | undefined) | undefined {
+  try {
+    const px = Math.min(image.naturalWidth || 1024, 1024)
+    const cv = document.createElement('canvas')
+    cv.width = cv.height = px
+    const ctx = cv.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return undefined
+    ctx.drawImage(image, 0, 0, px, px)
+    const perM = px / groundSizeM
+
+    return (x, z, radiusM = 3) => {
+      const cxPx = px / 2 + x * perM
+      const cyPx = px / 2 + z * perM
+      const r = Math.max(1, Math.round(radiusM * perM))
+      const x0 = Math.round(cxPx - r), y0 = Math.round(cyPx - r)
+      const w = r * 2, h = r * 2
+      if (x0 < 0 || y0 < 0 || x0 + w > px || y0 + h > px) return undefined
+      try {
+        const data = ctx.getImageData(x0, y0, w, h).data
+        const med = medianColour(data)
+        return med ? rgbToHex(med) : undefined
+      } catch {
+        return undefined
+      }
+    }
+  } catch {
+    return undefined
+  }
 }

@@ -22,6 +22,7 @@
 
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
+import { quantise, type Rgb } from '@/lib/world/roofColours'
 import { RoundedBox } from '@react-three/drei'
 import { Static } from './Static'
 import {
@@ -60,6 +61,12 @@ interface Props {
    * Grundebene bestellt. Fehlt es, bleibt die erzeugte Rasenfläche stehen.
    */
   groundTexture?: THREE.Texture | null
+  /**
+   * Liest die echte Farbe an einer Stelle des Luftbilds. Damit bekommt jedes
+   * Nachbardach den Ton, den es wirklich hat, statt einen aus der Palette des
+   * Regionalstils gewürfelten.
+   */
+  sampleGround?: (x: number, z: number, radiusM?: number) => string | undefined
 }
 
 /* ────────────────────────────── Materials ────────────────────────────── */
@@ -173,7 +180,11 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
 
   // ── Textured surfaces ──
   const span = world.extentM * 2
-  m.lawn.map = clone(grassTexture(), span / 2.2, span / 2.2)
+  // Das Vorfeld ist die achtfache Kantenlänge (siehe Grundfläche), also
+  // muss die Kachelung mitwachsen — sonst wird ein Grasbüschel hundert
+  // Meter breit und die Fläche liest sich als grüner Nebel.
+  m.lawn.map = clone(grassTexture(), span * 8 / 2.2, span * 8 / 2.2)
+  m.lawn.side = THREE.DoubleSide
   m.lawnPlot.map = clone(grassTexture(), 6, 6)
   m.road.map = clone(asphaltTexture(), span / 3, 1.4)
   m.road.color.set(dim(spec.palette.road))
@@ -353,10 +364,10 @@ function windowUnit(
  * Stehen bleibt, was aufragt und vermessen ist — der Baukörper und sein Dach.
  * Das Flache zeigt das Luftbild besser, als der Generator es raten kann.
  */
-function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false): React.ReactNode {
+function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false, roofOverride?: THREE.MeshStandardMaterial): React.ReactNode {
   const { m, facades, roofs, spec } = mats
   const facade = facades[h.facadeIndex % facades.length]
-  const roofMat = roofs[h.roofIndex % roofs.length]
+  const roofMat = roofOverride ?? roofs[h.roofIndex % roofs.length]
   const { plot } = h
   const parts: React.ReactNode[] = []
 
@@ -1141,10 +1152,47 @@ function parkNode(park: ParkSpec, mats: MatBag, rich: boolean, realGround = fals
 
 /* ────────────────────────────── Component ───────────────────────────── */
 
-export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture }: Props) {
+export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture, sampleGround }: Props) {
   const built = useMemo(() => {
     const mats = buildMaterials(world, season, daylightScale, phase)
     const nodes: React.ReactNode[] = []
+
+    // Dachfarben aus dem Luftbild.
+    //
+    // Der Regionalstil würfelt sie sonst aus einer Palette — über einem echten
+    // Foto sieht man den Unterschied sofort: die Straße hat rote Ziegel,
+    // dunklen Schiefer und graues Flachdach nebeneinander, das Modell malt sie
+    // in drei ausgedachten Tönen. Dabei liegt die Antwort direkt darunter, denn
+    // das Orthophoto ist die Aufsicht auf genau diese Dächer.
+    //
+    // Quantisiert, weil jede eigene Farbe ein eigenes Material und damit einen
+    // eigenen Zeichenaufruf bedeutet. Zwei benachbarte Rottöne unterscheidet
+    // niemand, Rot von Schiefergrau jeder.
+    const roofOverride = new Map<HouseSpec, THREE.MeshStandardMaterial>()
+    if (sampleGround) {
+      const sampled: { house: HouseSpec; rgb: Rgb }[] = []
+      for (const h of world.houses) {
+        // Ein Drittel der kleineren Gebäudekante als Leseradius: groß genug,
+        // um Gauben und Schattenkanten wegzumitteln, klein genug, um nicht auf
+        // dem Nachbardach oder im Garten zu landen.
+        const r = Math.max(1.5, Math.min(h.widthM, h.depthM) / 3)
+        const hex = sampleGround(h.centre.x, h.centre.z, r)
+        if (!hex) continue
+        sampled.push({ house: h, rgb: hexToRgb(hex) })
+      }
+      if (sampled.length > 0) {
+        const { palette, indexOf } = quantise(sampled.map((s) => s.rgb), 12)
+        const mats2 = palette.map((hex) => {
+          const mat = mats.roofs[0].clone()
+          mat.color.set(hex)
+          // Das Luftbild bringt die Beleuchtung der Befliegung schon mit;
+          // ungedämpft wären die Dächer im Modell doppelt beleuchtet.
+          mat.color.multiplyScalar(0.92)
+          return mat
+        })
+        sampled.forEach((s, i) => roofOverride.set(s.house, mats2[indexOf[i]]))
+      }
+    }
 
     // Ground plane under everything — blocks, verges and the space beyond.
     const size = world.extentM * 2.4
@@ -1162,6 +1210,25 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     // `MeshBasicMaterial` wäre falsch: der Boden muss Schatten annehmen, sonst
     // schwebt das Haus über seinem eigenen Luftbild.
     if (groundTexture) {
+      // Vorfeld: eine große Fläche **unter** und um das Luftbild herum.
+      //
+      // Das Luftbild ist exakt so groß wie bestellt — daran darf sich nichts
+      // ändern, sonst stimmt die Georeferenzierung nicht mehr. Genau deshalb
+      // hat es aber eine sichtbare Kante, und bei flachem Blickwinkel sah man
+      // über sie hinaus ins Nichts; die Szene wirkte wie eine schwebende
+      // Platte. Das Vorfeld schließt den Horizont, ohne den Maßstab des Bildes
+      // anzutasten.
+      nodes.push(
+        <mesh
+          key="ground-apron"
+          position={[world.network.centre.x, GROUND_Y - 0.05, world.network.centre.z]}
+          rotation={[-Math.PI / 2, 0, 0]}
+          receiveShadow
+          material={mats.m.lawn}
+        >
+          <planeGeometry args={[size * 8, size * 8]} />
+        </mesh>,
+      )
       nodes.push(
         <mesh
           key="ground"
@@ -1172,6 +1239,9 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
           <planeGeometry args={[size, size]} />
           <meshStandardMaterial
             map={groundTexture}
+            // Beidseitig: eine einseitige Ebene ist von unten unsichtbar, und
+            // dann schaut man durch den Boden hindurch in die Szene.
+            side={THREE.DoubleSide}
             roughness={0.94}
             metalness={0}
             // Das Luftbild bringt seine eigene Beleuchtung mit — Sonnenstand,
@@ -1184,13 +1254,13 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     } else {
       nodes.push(
         <mesh key="ground" position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={mats.m.lawn}>
-          <planeGeometry args={[size, size]} />
+          <planeGeometry args={[size * 8, size * 8]} />
         </mesh>,
       )
     }
 
     nodes.push(...streetNodes(world, mats, rich, !!groundTexture))
-    for (const h of world.houses) nodes.push(houseNode(h, mats, rich, !!groundTexture))
+    for (const h of world.houses) nodes.push(houseNode(h, mats, rich, !!groundTexture, roofOverride.get(h)))
     for (const a of world.amenities) nodes.push(amenityNode(a, mats, rich))
     if (world.park) nodes.push(parkNode(world.park, mats, rich, !!groundTexture))
     for (const [i, f] of world.furniture.entries()) {
@@ -1200,7 +1270,7 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     }
 
     return { nodes, mats }
-  }, [world, phase, daylightScale, season, rich, groundTexture])
+  }, [world, phase, daylightScale, season, rich, groundTexture, sampleGround])
 
   useEffect(() => {
     const { all, textures } = built.mats
@@ -1215,3 +1285,10 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
 
 export { GROUND_Y, buildMaterials }
 export type { MatBag }
+
+
+/** Umkehrung von `rgbToHex` — bewusst hier, weil nur dieser Pfad sie braucht. */
+function hexToRgb(hex: string): Rgb {
+  const n = parseInt(hex.slice(1), 16)
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+}
