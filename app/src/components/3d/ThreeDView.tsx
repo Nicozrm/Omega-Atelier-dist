@@ -5649,6 +5649,41 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
    * seiner Auflösung. Es bleibt bei 4096.
    */
   const ULTRA = tier === 'ultra'
+  /**
+   * Ziel der Sonne, damit die Schattenkamera über dem Plan sitzt statt über dem
+   * Weltursprung. Muss ein echtes Objekt im Szenengraphen sein: three liest die
+   * Zielposition über `light.target.matrixWorld`, und die bleibt
+   * Einheitsmatrix, solange das Ziel nicht Teil der Szene ist.
+   */
+  const sunTarget = useMemo(() => new THREE.Object3D(), [])
+  const sunRef = useRef<THREE.DirectionalLight>(null)
+  useEffect(() => {
+    if (sunRef.current) sunRef.current.target = sunTarget
+  }, [sunTarget, env.sun.aboveHorizon])
+
+  /**
+   * Halbe Kantenlänge des Schatten-Frustums, gemessen vom Plan-Mittelpunkt.
+   *
+   * Vorher stand hier `max(wM, hM) + 4` — **um den Weltursprung**, also um die
+   * Ecke des Plans. Bei einem 12×8-m-Grundstück bedeutete das: 32×32 m
+   * Frustum, davon 16 m leerer Raum auf der Minus-Seite, aber nur 4 m Rand auf
+   * der Plus-Seite, wohin der Schatten tatsächlich fällt. Nachgerechnet belegte
+   * das Gebäude rund 9 % der Schattenkarte; der Rest war unbenutzt.
+   *
+   * Richtig zentriert genügt die halbe Ausdehnung plus ein fester Rand — und
+   * der Rand ist ein Kompromiss, kein Wunschwert. Ein 7 m hohes Haus wirft bei
+   * 35° Sonnenhöhe 10 m Schatten, bei 27° schon 14 m und bei 20° über 19 m.
+   * Alles abzudecken hieße, das Frustum aufzublähen und damit die Texeldichte
+   * zu verlieren — bei einem 9×9-m-Plan kostete ein 14-m-Rand 30 % Schärfe.
+   *
+   * 10 m ist der Punkt, an dem beides aufgeht: nachgerechnet liegt die Dichte
+   * bei fast allen Plangrößen gleichauf oder besser als vorher (12×8 m:
+   * unverändert 128 Texel/m; 30×14 m: 60 → 82), und der Schattenraum wächst
+   * von 4 m auf zwei Seiten auf 10 m ringsum. Sehr flache Sonne schneidet die
+   * Schattenspitze ab — das ist die bewusst gewählte Seite des Handels, denn
+   * dort ist der Schatten ohnehin am blassesten.
+   */
+  const shadowExtentM = Math.max(wM, hM) / 2 + 10
   const detail: WorldDetail = isHQ(tier) ? 'high' : tier === 'low' ? 'low' : 'medium'
   const centreVec = useMemo(() => ({ x: cx, z: cz }), [cx, cz])
   const { world, source: worldSource } = useNeighbourhood({
@@ -5713,9 +5748,31 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
         />
       )}
       <ambientLight color={new THREE.Color(env.lighting.ambient.color).lerp(new THREE.Color('#ffecd0'), 0.18)} intensity={env.lighting.ambient.intensity * 0.56} />
+      {/*
+        Das Ziel der Sonne. Ohne dieses Objekt zielt eine `directionalLight` auf
+        den Weltursprung — und der ist hier die **Ecke** des Grundstücks, nicht
+        seine Mitte: der Plan liegt in 0…wM / 0…hM.
+
+        Die Folge war ein Schatten-Frustum, das zur Hälfte in leerem Raum hing.
+        Nachgerechnet für einen 12×8-m-Plan: 32×32 m Frustum, davon 16 m
+        Leerraum auf der Minus-Seite und nur 4 m Rand auf der Plus-Seite —
+        genau dort, wohin der Schatten fällt. Das Gebäude belegte rund 9 % der
+        Schattenkarte, der Rest war unbenutzt.
+
+        Ein `Object3D` muss dafür im Szenengraphen hängen: three liest die
+        Zielposition über `light.target.matrixWorld`, und die wird nur
+        aktualisiert, wenn das Objekt Teil der Szene ist. Ein bloßes
+        `target-position` am Licht bliebe wirkungslos.
+      */}
+      <primitive object={sunTarget} position={[cx, 0, cz]} />
       {env.sun.aboveHorizon && (
         <directionalLight
-          position={[env.sun.direction.x * SUN_DISTANCE, env.sun.direction.y * SUN_DISTANCE, env.sun.direction.z * SUN_DISTANCE]}
+          ref={sunRef}
+          position={[
+            cx + env.sun.direction.x * SUN_DISTANCE,
+            env.sun.direction.y * SUN_DISTANCE,
+            cz + env.sun.direction.z * SUN_DISTANCE,
+          ]}
           intensity={env.lighting.sun.intensity}
           color={env.lighting.sun.color}
           castShadow={env.lighting.sun.castShadow}
@@ -5723,10 +5780,10 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           shadow-mapSize-height={isHQ() ? 4096 : isHandheld() ? 1024 : 2048}
           shadow-camera-near={0.1}
           shadow-camera-far={50}
-          shadow-camera-left={-(Math.max(wM, hM) + 4)}
-          shadow-camera-right={Math.max(wM, hM) + 4}
-          shadow-camera-top={Math.max(wM, hM) + 4}
-          shadow-camera-bottom={-(Math.max(wM, hM) + 4)}
+          shadow-camera-left={-shadowExtentM}
+          shadow-camera-right={shadowExtentM}
+          shadow-camera-top={shadowExtentM}
+          shadow-camera-bottom={-shadowExtentM}
           shadow-bias={-0.0005}
           shadow-normalBias={0.02}
         />

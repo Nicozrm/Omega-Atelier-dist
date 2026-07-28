@@ -1,2 +1,0 @@
-import{v as s}from"./index-CMuCzP9q.js";const a="omega.cinematic";function o(){try{return localStorage.getItem(a)!=="0"}catch{return!0}}function d(t){try{localStorage.setItem(a,t?"1":"0")}catch{}}const n=new Set;let l=0;function p(t){return n.add(t),()=>{n.delete(t)}}function u(t,c,e){if(!o())return null;const i={x:t,y:c,kind:e,id:++l};for(const r of n)r(i);return i}const m={place:"thud",select:"click",delete:"click"};function g(t,c,e){o()&&(s(m[e]),u(t,c,e))}export{g as c,o as i,p as o,d as s};
-//# sourceMappingURL=cinematic-CQE86uc7.js.map
