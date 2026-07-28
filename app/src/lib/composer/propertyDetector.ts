@@ -51,6 +51,9 @@ export function detectProperty(image: SatelliteImage, ctx: AnalysisContext): Pro
     // Mit erfassten Straßen ist die Straßenseite keine Münze mehr, sondern die
     // Kante, an der die nächste befahrbare Straße entlangläuft.
     const fromOsm = ctx.osm ? streetSideFromRoads(ctx.osm.roads, { widthM, depthM }) : undefined
+    // Stammt die Fläche aus dem Kataster, ist sie vermessen — der Rahmen wurde
+    // dann in `runAnalysis` bereits aus dem Flurstück aufgebaut.
+    const cadastral = ctx.alkis?.own
     return {
       polygon,
       areaSqm,
@@ -58,12 +61,17 @@ export function detectProperty(image: SatelliteImage, ctx: AnalysisContext): Pro
       depthM,
       orientationDeg,
       streetSide: fromOsm?.side ?? guessed,
-      confidence: fromUser(polygon, USER_POLYGON_SOURCE).confidence,
+      confidence: cadastral
+        ? measured(polygon, ctx.alkis!.source).confidence
+        : fromUser(polygon, USER_POLYGON_SOURCE).confidence,
       provenance: {
-        geometry: 'user',
+        geometry: cadastral ? 'measured' : 'user',
         streetSide: fromOsm ? 'measured' : 'assumed',
       },
-      ...(fromOsm?.road.name ? { streetName: fromOsm.road.name } : {}),
+      ...(fromOsm?.road.name ?? cadastral?.street
+        ? { streetName: fromOsm?.road.name ?? cadastral?.street }
+        : {}),
+      ...(cadastral ? { parcelLabel: cadastral.label } : {}),
     }
   }
 

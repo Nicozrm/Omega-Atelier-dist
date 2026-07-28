@@ -36,6 +36,11 @@ import {
 import { plainFrame, type LocalFrame } from './frame'
 import { polygonCentroid } from './geo'
 import { osmSource, type OsmSource } from './sources/overpass'
+import { alkisSource, type AlkisSource } from './sources/alkis'
+import {
+  alkisSourceRef, extractCadastreBuildings, extractLandUse, extractParcels,
+  mainBuildingOnParcel, matchDrawnParcel, parcelAtPoint, parcelToInput,
+} from './resolvers/alkisResolver'
 import {
   extractBuildings, extractPois, extractRoads, pickOwnBuilding, summariseNeighbourhood,
   OSM_SOURCE,
@@ -177,6 +182,8 @@ export interface AnalyzeOptions {
    * Pipeline fällt dann vollständig auf ihre Annahmen zurück.
    */
   osm?: OsmSource | null
+  /** Das Liegenschaftskataster. `null` schaltet es ab. */
+  alkis?: AlkisSource | null
   pipeline?: Partial<DetectorPipeline>
   onProgress?: (p: AnalysisProgress) => void
   signal?: AbortSignal
@@ -240,13 +247,55 @@ export async function runAnalysis(input: AnalysisInput, opts: AnalyzeOptions = {
   // 1. Satellite capture
   const image = provider.capture(input.tap, input.view)
   const rng = new SeededRng(image.seed)
-  const prepared = prepareParcel(input.polygon)
+  let prepared = prepareParcel(input.polygon)
+  emit('satellite', undefined, provider.label)
+
+  // ── Kataster zuerst: es kann die Grundstücksgeometrie ersetzen, und alles
+  //    Weitere hängt am Rahmen, den sie aufspannt. ──────────────────────
+  let alkisObs: AnalysisContext['alkis']
+  const alkisSrc = opts.alkis === undefined ? alkisSource : opts.alkis
+  if (alkisSrc) {
+    const site = await alkisSrc.fetchSite(image.center, 90, signal)
+    if (site) {
+      const parcels = extractParcels(site)
+      const buildings = extractCadastreBuildings(site)
+      // Die Zeichnung sagt, welches Grundstück gemeint ist; das Kataster sagt,
+      // wo dessen Grenzen genau verlaufen. Ohne Zeichnung entscheidet der Tipp.
+      const own = matchDrawnParcel(input.polygon, parcels) ?? parcelAtPoint(image.center, parcels)
+      alkisObs = {
+        parcels, buildings,
+        own,
+        ownBuilding: own ? mainBuildingOnParcel(buildings, own) : undefined,
+        landUse: extractLandUse(site),
+        source: alkisSourceRef(site),
+      }
+      // Amtliche Grenze übernehmen — dieselbe Aufbereitung wie für die
+      // gezeichnete Fläche, damit alles Nachgelagerte unverändert weiterläuft.
+      if (own) {
+        const converted = parcelToInput(own)
+        if (converted) {
+          prepared = {
+            parcel: converted.input,
+            frame: {
+              origin: converted.origin,
+              rotationRad: converted.rotationRad,
+              offset: { x: 0, y: 0 },
+            },
+          }
+          // Der Rahmen normiert bereits auf den Ursprung; der Versatz steckt in
+          // `parcelToInput`, deshalb bleibt er hier null.
+        }
+      }
+    }
+  }
+  throwIfAborted(signal)
+
   const frame = prepared?.frame ?? plainFrame(image.center)
   const ctx: AnalysisContext = {
     rng, image, frame,
     ...(prepared ? { parcel: prepared.parcel } : {}),
+    ...(alkisObs ? { alkis: alkisObs } : {}),
   }
-  emit('satellite', undefined, provider.label)
 
   // ── Echte Quellen, bevor die Detektoren laufen ──────────────────────
   // Der Abruf darf die Analyse nie zum Scheitern bringen: fällt OSM aus,
