@@ -118,6 +118,8 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
   const pal = spec.palette
   const m = {
     lawn: S(ground(mixHex(pal.lawn, sp.lawn, 0.6)), 1),
+    /** Vorfeld bis zum Horizont — bewusst ohne Textur, siehe unten. */
+    apron: S(ground(mixHex(pal.lawn, sp.lawn, 0.6)), 1),
     lawnPlot: S(ground(mixHex(pal.lawn, sp.lawn, 0.45)), 1),
     road: S('#ffffff', 0.95),
     kerb: S(pal.kerb, 0.85),
@@ -199,9 +201,20 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
   // rund 200 Wiederholungen liegt ein Grasbüschel unter einem Bildschirmpixel,
   // und aus der Textur wird Rauschen. Der Deckel kostet nur, dass ein sehr
   // fernes Grasbüschel groß wirkt — das sieht ohnehin niemand.
-  const lawnRepeat = Math.min(200, (span * APRON_FACTOR) / 2.2)
+  // Die Nahfläche behält ihre Grastextur in vernünftiger Kachelung.
+  const lawnRepeat = Math.min(48, span / 2.2)
   m.lawn.map = clone(grassTexture(), lawnRepeat, lawnRepeat)
   m.lawn.side = THREE.DoubleSide
+  // Das Vorfeld dagegen bleibt **texturlos**.
+  //
+  // Es reicht Hunderte Meter weit, und eine Detailtextur auf einer so großen
+  // Ebene schimmert am Horizont unweigerlich: dort fällt eine ganze Kachel auf
+  // weniger als einen Bildpunkt, und jede Kamerabewegung lässt die Fläche
+  // flimmern. Genau das war als „flackert sehr extrem" zu sehen. Eine ruhige
+  // Einfarbfläche kann nicht flimmern, und aus dieser Entfernung erkennt
+  // ohnehin niemand einzelne Grashalme.
+  m.apron.color.copy(m.lawn.color)
+  m.apron.side = THREE.DoubleSide
   m.lawnPlot.map = clone(grassTexture(), 6, 6)
   m.road.map = clone(asphaltTexture(), span / 3, 1.4)
   m.road.color.set(dim(spec.palette.road))
@@ -1288,7 +1301,16 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
       nodes.push(
         <mesh
           key="ground-apron"
-          position={[world.network.centre.x, GROUND_Y - 0.05, world.network.centre.z]}
+          // 40 cm tiefer, nicht 5.
+          //
+          // Bei 5 cm lagen zwei riesige, fast parallele Flächen im selben
+          // Tiefenbereich — das Vorfeld und die Bodenebene. Auf große
+          // Entfernung reicht die Genauigkeit des Tiefenpuffers dort nicht
+          // mehr aus, um sie zu trennen, und das Bild flackert zwischen beiden
+          // hin und her. Ein größerer Abstand löst das ohne Tricks; sichtbar
+          // ist die Stufe nicht, weil sie am Rand des Luftbilds liegt und dort
+          // ohnehin über hundert Meter entfernt ist.
+          position={[world.network.centre.x, GROUND_Y - 0.4, world.network.centre.z]}
           rotation={[-Math.PI / 2, 0, 0]}
           // **Kein** `receiveShadow`. Das Vorfeld ist ein Vielfaches der Szene
           // groß und liegt damit fast vollständig außerhalb des
@@ -1296,7 +1318,7 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
           // liefert die Schattenkarte keine sinnvollen Werte mehr, und das
           // Ergebnis ist Schattenakne: helle und dunkle Streifen quer über die
           // ganze Fläche. Genau so sah es aus, bis diese Zeile fehlte.
-          material={mats.m.lawn}
+          material={mats.m.apron}
         >
           <planeGeometry args={[size * APRON_FACTOR, size * APRON_FACTOR]} />
         </mesh>,
@@ -1345,8 +1367,11 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
       )
     } else {
       nodes.push(
-        <mesh key="ground" position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={mats.m.lawn}>
+        <mesh key="ground-apron" position={[world.network.centre.x, GROUND_Y - 0.4, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} material={mats.m.apron}>
           <planeGeometry args={[size * APRON_FACTOR, size * APRON_FACTOR]} />
+        </mesh>,
+        <mesh key="ground" position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={mats.m.lawn}>
+          <planeGeometry args={[size, size]} />
         </mesh>,
       )
     }
