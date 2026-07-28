@@ -19,7 +19,8 @@
     "verify:dop": "vite-node scripts/verify-dop.ts",
     "verify:world": "vite-node scripts/verify-world.ts",
     "overlay:check": "vite-node scripts/overlay-check.ts",
-    "verify:roofcolours": "vite-node scripts/verify-roofcolours.ts"
+    "verify:roofcolours": "vite-node scripts/verify-roofcolours.ts",
+    "verify:neighbour-gap": "vite-node scripts/verify-neighbour-gap.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",

@@ -203,10 +203,25 @@ export function subdividePlots(
           ? block.minZ + plotDepth / 2
           : block.maxZ - plotDepth / 2
 
-        // Reserve whatever overlaps the user's own building footprint.
+        /*
+         * Freihalten, was sich mit dem eigenen Grundstück überschneidet.
+         *
+         * Der Zuschlag stand auf 3 m — und genau der hat die direkten Nachbarn
+         * gekostet. Zwei Grundstücke, die aneinandergrenzen, haben ihre
+         * Mittelpunkte exakt um die Summe ihrer Halbbreiten entfernt; ein
+         * zusätzlicher Puffer erklärt sie fälschlich für überlappend. Da das
+         * Raster nur diskrete Positionen anbietet, fiel damit die ganze erste
+         * Reihe weg und der nächste Nachbar rückte von 26 m auf 46 m — bei
+         * jedem Plan ab etwa 20 × 16 m, unabhängig von seiner Größe. Das Bild
+         * war eine Villa auf freiem Feld, und genau so wurde es gemeldet.
+         *
+         * 0,5 m bleiben als Fugenmaß: ein Nachbargrundstück darf anschließen,
+         * aber nicht ins eigene hineinragen.
+         */
+        const GAP_M = 0.5
         const overlapsOwn =
-          Math.abs(cxPlot - centre.x) < input.ownHalfW + widthM / 2 + 3 &&
-          Math.abs(cz - centre.z) < input.ownHalfD + plotDepth / 2 + 3
+          Math.abs(cxPlot - centre.x) < input.ownHalfW + widthM / 2 + GAP_M &&
+          Math.abs(cz - centre.z) < input.ownHalfD + plotDepth / 2 + GAP_M
 
         out.push({
           id: `${block.id}-${frontage}-${k}`,
