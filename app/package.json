@@ -10,7 +10,8 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "verify:parcel": "vite-node scripts/verify-parcel.ts"
+    "verify:parcel": "vite-node scripts/verify-parcel.ts",
+    "verify:osm": "vite-node scripts/verify-osm.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",

@@ -1,4 +1,8 @@
-import type { Provenance } from './provenance'
+import type { Provenance, SourceRef } from './provenance'
+import type { LocalFrame } from './frame'
+import type {
+  NeighbourhoodSummary, OsmBuilding, OsmPoi, OsmRoad,
+} from './resolvers/osmResolver'
 
 /**
  * types.ts — the Composer's shared vocabulary.
@@ -89,6 +93,14 @@ export interface SatelliteImage {
 export interface AnalysisContext {
   rng: Rng
   image: SatelliteImage
+  /** Der lokale metrische Rahmen — alle Quellen projizieren hier hinein. */
+  frame: LocalFrame
+  /**
+   * Was OpenStreetMap zum Standort weiß, bereits projiziert und sortiert.
+   * Fehlt, wenn die Quelle nicht erreichbar war — dann bleibt der Generator
+   * zuständig und markiert seine Ausgabe als Annahme.
+   */
+  osm?: OsmObservations
   /**
    * The parcel the user drew, already projected into the local metric frame,
    * rotated into its own axes and normalised to start at the origin.
@@ -99,6 +111,18 @@ export interface AnalysisContext {
    * prefer it over anything they could derive themselves.
    */
   parcel?: ParcelInput
+}
+
+/** Was aus der OSM-Antwort für die Detektoren übrig bleibt. */
+export interface OsmObservations {
+  buildings: OsmBuilding[]
+  /** Das Gebäude, das als „das eigene" gilt — sofern erfasst. */
+  own?: OsmBuilding
+  roads: OsmRoad[]
+  pois: OsmPoi[]
+  summary: NeighbourhoodSummary
+  /** Datenstand und Abrufzeit, für die Quellenangabe. */
+  source: SourceRef
 }
 
 /** The user-drawn parcel, prepared for the detectors. */
@@ -167,6 +191,8 @@ export interface PropertyFeature {
     geometry: Provenance
     streetSide: Provenance
   }
+  /** Name der erschließenden Straße, sofern erfasst. */
+  streetName?: string
 }
 
 /** One volume of the building — the house itself or an attachment. */
@@ -187,6 +213,16 @@ export interface BuildingFeature {
   stories: number
   areaSqm: number
   confidence: number
+  /**
+   * Herkunft je Aussage. Bewusst getrennt: der Umriss kann gemessen sein,
+   * während die Geschosszahl nur abgeleitet und die Traufhöhe geschätzt ist —
+   * ein einziger Wert für „das Gebäude" würde genau das verwischen.
+   */
+  provenance: {
+    footprint: Provenance
+    stories: Provenance
+    height: Provenance
+  }
 }
 
 export type RoofShape = 'gable' | 'hip' | 'flat' | 'pent'
@@ -199,6 +235,11 @@ export interface RoofFeature {
   /** Ridge bearing, degrees — 0 = north–south. */
   orientationDeg: number
   confidence: number
+  /**
+   * Woher die Dachform stammt. Die Neigung bleibt auch bei getaggter Form eine
+   * Ableitung — OSM kennt sie praktisch nie, LoD2 wird sie liefern.
+   */
+  shapeProvenance: Provenance
 }
 
 /** A run of entrance steps on the driveway/path. */

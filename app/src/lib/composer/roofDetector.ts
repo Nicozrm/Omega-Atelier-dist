@@ -27,11 +27,17 @@ export function detectRoof(building: BuildingFeature, ctx: AnalysisContext): Roo
   const rng = ctx.rng.fork(0x524f4f46) // 'ROOF'
   const { w, d } = bboxOf(building.footprint)
 
+  // `roof:shape` ist in OSM oft getaggt. Dann ist die Dachform gemessen — die
+  // Neigung bleibt trotzdem eine Ableitung, denn die kennt OSM praktisch nie.
+  const taggedShape = ctx.osm?.own?.roofShape
+
   // Shape mix: gable dominates, hips and flats common, pent rare. Taller homes
   // skew pitched; single-storey modern boxes skew flat.
   const roll = rng.next()
   let shape: RoofShape
-  if (building.stories >= 2) {
+  if (taggedShape) {
+    shape = taggedShape
+  } else if (building.stories >= 2) {
     shape = roll < 0.5 ? 'gable' : roll < 0.8 ? 'hip' : roll < 0.94 ? 'flat' : 'pent'
   } else {
     shape = roll < 0.4 ? 'flat' : roll < 0.72 ? 'gable' : roll < 0.9 ? 'hip' : 'pent'
@@ -53,7 +59,8 @@ export function detectRoof(building: BuildingFeature, ctx: AnalysisContext): Roo
     ridgeHeightM,
     eavesHeightM,
     orientationDeg,
-    confidence: Math.min(0.97, 0.84 + rng.range(0, 0.11)),
+    confidence: taggedShape ? 0.96 : 0.35,
+    shapeProvenance: taggedShape ? 'measured' : 'assumed',
   }
 }
 

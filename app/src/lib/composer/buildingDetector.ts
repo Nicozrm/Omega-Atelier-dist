@@ -18,6 +18,8 @@ import type {
 } from './types'
 import { polygonAreaSqm } from './geo'
 import { clamp, frameOf, rectAB, type StreetSide } from './layout'
+import { buildingFromOsm } from './resolvers/osmResolver'
+import { assumed } from './provenance'
 
 /** Storey → eaves height in metres. */
 export function eavesHeight(stories: number): number {
@@ -50,6 +52,17 @@ function toPart(
 
 export function detectBuilding(property: PropertyFeature, ctx: AnalysisContext): BuildingFeature {
   const rng = ctx.rng.fork(0x424c4447) // 'BLDG'
+
+  // Ist das Gebäude erfasst, wird es übernommen statt erfunden. Der Umriss
+  // stammt in Deutschland meist aus dem Kataster — genauer wird es erst mit
+  // LoD2, und das ändert dann nur die Quelle, nicht diese Stelle.
+  if (ctx.osm?.own) {
+    const { feature } = buildingFromOsm(ctx.osm.own, {
+      elements: [], timestamp: ctx.osm.source.version,
+    })
+    return feature
+  }
+
   const { widthM: W, depthM: D, streetSide } = property
   const { alongLen: L, depthLen: Dp } = frameOf(streetSide, W, D)
 
@@ -150,7 +163,10 @@ export function detectBuilding(property: PropertyFeature, ctx: AnalysisContext):
     heightM,
     stories,
     areaSqm,
-    confidence: Math.min(0.99, 0.9 + rng.range(0, 0.08)),
+    // Nichts davon wurde beobachtet — Grundriss, Geschosse und Höhe stammen
+    // vollständig aus dem Zufallsstrom dieses Grundstücks.
+    confidence: assumed(null).confidence,
+    provenance: { footprint: 'assumed', stories: 'assumed', height: 'assumed' },
   }
 }
 

@@ -27,7 +27,8 @@ import type {
 } from './types'
 import { polygonAreaSqm } from './geo'
 import { parcelAt } from './world'
-import { assumed, fromUser, USER_POLYGON_SOURCE } from './provenance'
+import { assumed, fromUser, measured, USER_POLYGON_SOURCE } from './provenance'
+import { streetSideFromRoads } from './resolvers/osmResolver'
 
 export function rect(x0: number, y0: number, x1: number, y1: number) {
   return [
@@ -41,21 +42,28 @@ export function rect(x0: number, y0: number, x1: number, y1: number) {
 export function detectProperty(image: SatelliteImage, ctx: AnalysisContext): PropertyFeature {
   const rng = ctx.rng.fork(0x50524f50) // 'PROP'
 
-  // Neither path can observe this yet. Most German plots front south onto the
-  // estate road, with the occasional corner lot — kept deterministic per seed.
-  const streetSide = rng.next() < 0.82 ? 'south' : rng.pick(['east', 'west'] as const)
+  // Fallback für die Straßenseite: die meisten deutschen Grundstücke fronten
+  // nach Süden zur Erschließungsstraße, gelegentlich ein Eckgrundstück.
+  const guessed = rng.next() < 0.82 ? 'south' : rng.pick(['east', 'west'] as const)
 
   if (ctx.parcel) {
     const { polygon, widthM, depthM, orientationDeg, areaSqm } = ctx.parcel
+    // Mit erfassten Straßen ist die Straßenseite keine Münze mehr, sondern die
+    // Kante, an der die nächste befahrbare Straße entlangläuft.
+    const fromOsm = ctx.osm ? streetSideFromRoads(ctx.osm.roads, { widthM, depthM }) : undefined
     return {
       polygon,
       areaSqm,
       widthM,
       depthM,
       orientationDeg,
-      streetSide,
+      streetSide: fromOsm?.side ?? guessed,
       confidence: fromUser(polygon, USER_POLYGON_SOURCE).confidence,
-      provenance: { geometry: 'user', streetSide: 'assumed' },
+      provenance: {
+        geometry: 'user',
+        streetSide: fromOsm ? 'measured' : 'assumed',
+      },
+      ...(fromOsm?.road.name ? { streetName: fromOsm.road.name } : {}),
     }
   }
 
@@ -63,6 +71,7 @@ export function detectProperty(image: SatelliteImage, ctx: AnalysisContext): Pro
   const widthM = Math.round(parcel.widthM * 10) / 10
   const depthM = Math.round(parcel.depthM * 10) / 10
   const polygon = rect(0, 0, widthM, depthM)
+  const fromOsm = ctx.osm ? streetSideFromRoads(ctx.osm.roads, { widthM, depthM }) : undefined
 
   return {
     polygon,
@@ -70,10 +79,14 @@ export function detectProperty(image: SatelliteImage, ctx: AnalysisContext): Pro
     widthM,
     depthM,
     orientationDeg: Math.round(parcel.orientationDeg * 10) / 10,
-    streetSide,
+    streetSide: fromOsm?.side ?? guessed,
     // Nothing here was observed — the lot comes from a hash of the coordinate.
     confidence: assumed(polygon).confidence,
-    provenance: { geometry: 'assumed', streetSide: 'assumed' },
+    provenance: {
+      geometry: 'assumed',
+      streetSide: fromOsm ? 'measured' : 'assumed',
+    },
+    ...(fromOsm?.road.name ? { streetName: fromOsm.road.name } : {}),
   }
 }
 

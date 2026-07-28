@@ -33,6 +33,13 @@ import { SeededRng } from './rng'
 import {
   geoToLocal, normalizePolygon, orientedBounds, polygonAreaSqm, polygonBBox, rotatePolygon,
 } from './geo'
+import { plainFrame, type LocalFrame } from './frame'
+import { polygonCentroid } from './geo'
+import { osmSource, type OsmSource } from './sources/overpass'
+import {
+  extractBuildings, extractPois, extractRoads, pickOwnBuilding, summariseNeighbourhood,
+  OSM_SOURCE,
+} from './resolvers/osmResolver'
 import { defaultMapProvider, type MapProvider } from './mapProvider'
 import { PropertyDetector } from './propertyDetector'
 import { BuildingRecognizer } from './buildingDetector'
@@ -120,7 +127,9 @@ export interface AnalysisInput {
  * Returns `undefined` for anything that is not a usable ring (fewer than three
  * points, or a degenerate sliver), so the caller falls back cleanly.
  */
-export function prepareParcel(polygon: GeoPoint[] | undefined): ParcelInput | undefined {
+export function prepareParcel(
+  polygon: GeoPoint[] | undefined,
+): { parcel: ParcelInput; frame: LocalFrame } | undefined {
   if (!polygon || polygon.length < 3) return undefined
 
   // North-west corner: smallest longitude, largest latitude.
@@ -139,19 +148,35 @@ export function prepareParcel(polygon: GeoPoint[] | undefined): ParcelInput | un
   const depthM = bb.maxY - bb.minY
   if (widthM < 2 || depthM < 2) return undefined
 
+  // Derselbe Rahmen, in den später jede weitere Quelle projiziert wird.
+  const rotatedBB = polygonBBox(rotatePolygon(local, -ob.angle))
+  const frame: LocalFrame = {
+    origin,
+    rotationRad: -ob.angle,
+    offset: { x: -rotatedBB.minX, y: -rotatedBB.minY },
+  }
+
   return {
-    polygon: aligned,
-    areaSqm: Math.round(areaSqm),
-    widthM: Math.round(widthM * 10) / 10,
-    depthM: Math.round(depthM * 10) / 10,
-    // Local y runs south, so a positive rotation in that frame is a bearing
-    // measured clockwise from north once negated.
-    orientationDeg: Math.round(((-ob.angle * 180) / Math.PI) * 10) / 10,
+    parcel: {
+      polygon: aligned,
+      areaSqm: Math.round(areaSqm),
+      widthM: Math.round(widthM * 10) / 10,
+      depthM: Math.round(depthM * 10) / 10,
+      // Local y runs south, so a positive rotation in that frame is a bearing
+      // measured clockwise from north once negated.
+      orientationDeg: Math.round(((-ob.angle * 180) / Math.PI) * 10) / 10,
+    },
+    frame,
   }
 }
 
 export interface AnalyzeOptions {
   provider?: MapProvider
+  /**
+   * Die OSM-Quelle. `null` schaltet sie ab (Tests, Offline-Modus) — die
+   * Pipeline fällt dann vollständig auf ihre Annahmen zurück.
+   */
+  osm?: OsmSource | null
   pipeline?: Partial<DetectorPipeline>
   onProgress?: (p: AnalysisProgress) => void
   signal?: AbortSignal
@@ -215,9 +240,39 @@ export async function runAnalysis(input: AnalysisInput, opts: AnalyzeOptions = {
   // 1. Satellite capture
   const image = provider.capture(input.tap, input.view)
   const rng = new SeededRng(image.seed)
-  const parcel = prepareParcel(input.polygon)
-  const ctx: AnalysisContext = { rng, image, ...(parcel ? { parcel } : {}) }
+  const prepared = prepareParcel(input.polygon)
+  const frame = prepared?.frame ?? plainFrame(image.center)
+  const ctx: AnalysisContext = {
+    rng, image, frame,
+    ...(prepared ? { parcel: prepared.parcel } : {}),
+  }
   emit('satellite', undefined, provider.label)
+
+  // ── Echte Quellen, bevor die Detektoren laufen ──────────────────────
+  // Der Abruf darf die Analyse nie zum Scheitern bringen: fällt OSM aus,
+  // läuft alles wie zuvor, nur eben vollständig als Annahme markiert.
+  const osmSrc = opts.osm === undefined ? osmSource : opts.osm
+  if (osmSrc) {
+    const result = await osmSrc.fetchSite(image.center, signal)
+    if (result) {
+      const parcelPoly = prepared?.parcel.polygon
+      const reference = parcelPoly && parcelPoly.length >= 3
+        ? polygonCentroid(parcelPoly)
+        : { x: 0, y: 0 }
+      const buildings = extractBuildings(result, frame, parcelPoly)
+      const roads = extractRoads(result, frame, reference)
+      const pois = extractPois(result, frame, reference)
+      ctx.osm = {
+        buildings,
+        own: pickOwnBuilding(buildings),
+        roads,
+        pois,
+        summary: summariseNeighbourhood(buildings, roads, pois),
+        source: { ...OSM_SOURCE, version: result.timestamp, fetchedAt: new Date().toISOString() },
+      }
+    }
+  }
+  throwIfAborted(signal)
   await sleep(delay, signal)
   throwIfAborted(signal)
 

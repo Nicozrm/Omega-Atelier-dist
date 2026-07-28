@@ -75,8 +75,8 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceReport {
    */
   const provenance: Record<ConfidenceKey, Provenance> = {
     property: property.provenance.geometry,
-    building: 'assumed',
-    roof: 'assumed',
+    building: building.provenance.footprint,
+    roof: input.roof.shapeProvenance,
     garage: 'assumed',
     terrain: 'assumed',
     vegetation: 'assumed',
@@ -84,7 +84,10 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceReport {
   }
 
   const score = (key: ConfidenceKey): number =>
-    key === 'property' ? round2(clamp01(property.confidence)) : round2(assumed(null).confidence)
+    key === 'property' ? round2(clamp01(property.confidence))
+      : key === 'building' ? round2(clamp01(building.confidence))
+        : key === 'roof' ? round2(clamp01(input.roof.confidence))
+          : round2(assumed(null).confidence)
 
   const byObject: Record<ConfidenceKey, number> = {
     property: score('property'),
