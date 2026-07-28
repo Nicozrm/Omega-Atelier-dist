@@ -21,7 +21,7 @@ import {
   generateNeighbourhood, neighbourhoodFromOsm, seedForPlan,
   type CityStyle, type Neighbourhood, type WorldDetail,
 } from '@/lib/world'
-import { osmSource } from '@/lib/composer/sources/overpass'
+import { worldOsmSource } from '@/lib/composer/sources/overpass'
 import { extractBuildings, extractPois, extractRoads, pickOwnBuilding } from '@/lib/composer/resolvers/osmResolver'
 import { plainFrame } from '@/lib/composer/frame'
 import type { PlanGeo } from '@/types'
@@ -74,7 +74,7 @@ export function useNeighbourhood(input: UseNeighbourhoodInput): NeighbourhoodRes
     void (async () => {
       try {
         const at = { lat: geo.lat, lng: geo.lng }
-        const result = await osmSource.fetchSite(at, ac.signal)
+        const result = await worldOsmSource.fetchSite(at, ac.signal)
         if (run !== runRef.current || !result) return
 
         // Der Rahmen ist hier bewusst nordausgerichtet und im Plan-Mittelpunkt

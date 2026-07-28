@@ -70,6 +70,13 @@ export function rectAB(
   ]
 }
 
+/**
+ * Angenommene Geschosshöhe, wenn keine Quelle sie kennt. Deutscher
+ * Wohnungsbau liegt sehr eng um diesen Wert, weshalb er als Ableitung
+ * vertretbar ist — als Messung wäre er es nicht.
+ */
+export const cityStyleStoreyHeightM = 2.85
+
 /** Clamp a value into [min, max]. */
 export function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n))

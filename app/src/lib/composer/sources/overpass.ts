@@ -27,6 +27,7 @@
  */
 
 import type { GeoPoint } from '../types'
+import { isCallerAbort, SOURCE_BUDGET_MS, withDeadline, withinBudget } from './deadline'
 
 /* ────────────────────────────── Rohdaten ────────────────────────────── */
 
@@ -105,8 +106,8 @@ export class HttpOverpassTransport implements OverpassTransport {
 
   constructor(opts: HttpOverpassOptions = {}) {
     this.mirrors = opts.mirrors ?? OVERPASS_MIRRORS
-    this.attempts = Math.max(1, opts.attempts ?? 4)
-    this.timeoutMs = opts.timeoutMs ?? 25_000
+    this.attempts = Math.max(1, opts.attempts ?? 2)
+    this.timeoutMs = opts.timeoutMs ?? SOURCE_BUDGET_MS.overpass
     this.fetchFn = opts.fetchFn ?? ((...args) => fetch(...args))
   }
 
@@ -124,7 +125,8 @@ export class HttpOverpassTransport implements OverpassTransport {
             'User-Agent': 'OmegaAtelier/2.0 (+https://omega-atelier.vercel.app)',
           },
           body: new URLSearchParams({ data: ql }),
-          signal: signal ?? AbortSignal.timeout(this.timeoutMs),
+          // Frist UND Aufrufer-Abbruch — nie das eine statt des anderen.
+          signal: withDeadline(signal, this.timeoutMs),
         })
         if (!res.ok) {
           lastError = new Error(`Overpass ${res.status} (${url})`)
@@ -133,11 +135,14 @@ export class HttpOverpassTransport implements OverpassTransport {
           return { elements: json.elements ?? [], timestamp: json.osm3s?.timestamp_osm_base }
         }
       } catch (err) {
-        if ((err as Error)?.name === 'AbortError') throw err
+        // Nur ein Abbruch des Aufrufers wird durchgereicht; ein Fristablauf ist
+        // ein gewöhnlicher Fehlschlag, damit der Rückfall greifen kann.
+        if (isCallerAbort(signal)) throw err
         lastError = err
       }
+      if (isCallerAbort(signal)) throw new DOMException('aborted', 'AbortError')
       // Zurückhaltung wächst mit jedem Fehlversuch — der Dienst ist kostenlos.
-      await sleep(600 * 2 ** i)
+      await sleep(400 * 2 ** i)
     }
     throw lastError instanceof Error ? lastError : new Error('Overpass nicht erreichbar')
   }
@@ -159,13 +164,21 @@ export interface SiteQueryRadii {
 }
 
 /**
- * Der Gebäude-Radius dient zwei Zwecken: der Analyse (dort genügen 60 m rund
- * um das Grundstück) und der 3D-Nachbarschaft (die will den ganzen Straßenzug).
- * Beide teilen sich **eine** Abfrage und damit einen Cache-Eintrag — ein
- * getrennter enger Radius würde nur eine zweite Anfrage an einen kostenlosen
- * Dienst kosten, ohne etwas zu verbessern.
+ * Zwei Radien, zwei Zwecke — und bewusst **nicht** eine gemeinsame Abfrage.
+ *
+ * Ursprünglich teilten sich Analyse und 3D-Nachbarschaft eine große Abfrage,
+ * um Cache und Ratenlimit zu schonen. Gemessen kostet die große Fassung 8,5 s,
+ * die kleine 2,1 s — und die große lag damit im Wizard auf dem kritischen Pfad,
+ * wo jede Sekunde als Stillstand wahrgenommen wird.
+ *
+ * Die Analyse braucht nur das unmittelbare Umfeld. Die Nachbarschaft braucht
+ * den ganzen Straßenzug, wird aber erst in der 3D-Ansicht gebraucht, läuft dort
+ * im Hintergrund und hat einen sichtbaren Rückfall. Sie darf also langsam sein.
  */
-export const DEFAULT_RADII: SiteQueryRadii = { buildingM: 220, roadM: 260, contextM: 550 }
+export const DEFAULT_RADII: SiteQueryRadii = { buildingM: 60, roadM: 180, contextM: 400 }
+
+/** Der weite Radius für die 3D-Nachbarschaft — abseits des kritischen Pfads. */
+export const WORLD_RADII: SiteQueryRadii = { buildingM: 220, roadM: 260, contextM: 550 }
 
 /**
  * Die Standortabfrage: alles, was die Phasen 1–5 aus OSM beziehen können, in
@@ -239,23 +252,41 @@ export class OsmSource {
     private readonly transport: OverpassTransport = new HttpOverpassTransport(),
     private readonly cache: SiteCache = new MemorySiteCache(),
     private readonly radii: SiteQueryRadii = DEFAULT_RADII,
+    /** Frist. Auf dem kritischen Pfad knapp, im Hintergrund großzügig. */
+    private readonly budgetMs: number = SOURCE_BUDGET_MS.overpass,
   ) {}
 
   async fetchSite(at: GeoPoint, signal?: AbortSignal): Promise<OverpassResult | undefined> {
     const key = cellKey(at, this.radii)
     const hit = this.cache.get(key)
     if (hit && Date.now() - hit.storedAt < CACHE_TTL_MS) return hit.result
-    try {
-      const result = await this.transport.query(buildSiteQuery(at, this.radii), signal)
-      this.cache.set(key, { result, storedAt: Date.now() })
-      return result
-    } catch (err) {
-      if ((err as Error)?.name === 'AbortError') throw err
-      // Abgelaufener Cache ist besser als gar nichts.
-      return hit?.result
-    }
+
+    // Die Frist liegt hier, nicht im Transport: sie muss unabhängig davon
+    // gelten, wer die Anfrage tatsächlich ausführt. Abgelaufener Cache ist
+    // dabei der bessere Rückfall als gar nichts.
+    return withinBudget(
+      async (deadline) => {
+        const result = await this.transport.query(buildSiteQuery(at, this.radii), deadline)
+        this.cache.set(key, { result, storedAt: Date.now() })
+        return result as OverpassResult | undefined
+      },
+      hit?.result,
+      this.budgetMs,
+      signal,
+    )
   }
 }
 
-/** Die geteilte Instanz, die der Wizard benutzt. */
+/** Die Instanz für die Analyse: enger Radius, knappe Frist. */
 export const osmSource = new OsmSource()
+
+/**
+ * Die Instanz für die 3D-Nachbarschaft: weiter Radius, großzügige Frist.
+ * Eigener Cache-Eintrag, weil der Schlüssel die Radien enthält.
+ */
+export const worldOsmSource = new OsmSource(
+  new HttpOverpassTransport({ timeoutMs: SOURCE_BUDGET_MS.overpassWorld }),
+  new MemorySiteCache(),
+  WORLD_RADII,
+  SOURCE_BUDGET_MS.overpassWorld,
+)

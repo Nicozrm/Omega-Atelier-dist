@@ -19,7 +19,9 @@ import type {
 import { polygonAreaSqm } from './geo'
 import { clamp, frameOf, rectAB, type StreetSide } from './layout'
 import { buildingFromOsm } from './resolvers/osmResolver'
-import { assumed } from './provenance'
+import { assumed, measured } from './provenance'
+import { polygonToLocal } from './frame'
+import { cityStyleStoreyHeightM } from './layout'
 
 /** Storey → eaves height in metres. */
 export function eavesHeight(stories: number): number {
@@ -53,9 +55,41 @@ function toPart(
 export function detectBuilding(property: PropertyFeature, ctx: AnalysisContext): BuildingFeature {
   const rng = ctx.rng.fork(0x424c4447) // 'BLDG'
 
-  // Ist das Gebäude erfasst, wird es übernommen statt erfunden. Der Umriss
-  // stammt in Deutschland meist aus dem Kataster — genauer wird es erst mit
-  // LoD2, und das ändert dann nur die Quelle, nicht diese Stelle.
+  // Reihenfolge nach Verlässlichkeit **und** Verfügbarkeit.
+  //
+  // Das Kataster steht an erster Stelle: es ist die amtliche Quelle, es kennt
+  // den Unterschied zwischen Wohnhaus und Garage, und es antwortet in unter
+  // einer Sekunde. Overpass schwankt dagegen zwischen 2 und 8 Sekunden — es
+  // darf den Wizard nicht bestimmen, sondern nur bereichern. Fällt es aus,
+  // steht trotzdem ein vermessenes Gebäude.
+  const cadastral = ctx.alkis?.ownBuilding
+  if (cadastral) {
+    const footprint = polygonToLocal(ctx.frame, cadastral.ring)
+    // Geschosse kennt das Kataster nicht; OSM manchmal, sonst wird aus der
+    // Grundfläche abgeleitet.
+    const osmLevels = ctx.osm?.own?.levels
+    const stories = osmLevels !== undefined
+      ? Math.max(1, Math.round(osmLevels))
+      : cadastral.areaSqm < 90 ? 1 : 2
+    const heightM = Math.round((stories * cityStyleStoreyHeightM + 0.4) * 10) / 10
+    return {
+      footprint,
+      parts: [{ kind: 'main', polygon: footprint, heightM, confidence: 0.96 }],
+      heightM,
+      stories,
+      areaSqm: cadastral.areaSqm,
+      confidence: measured(null, ctx.alkis!.source).confidence,
+      provenance: {
+        footprint: 'measured',
+        stories: osmLevels !== undefined ? 'measured' : 'inferred',
+        // Die Traufhöhe wird aus der Geschosszahl hochgerechnet — weder
+        // Kataster noch OSM kennen sie. LoD2 wird das ändern.
+        height: 'inferred',
+      },
+    }
+  }
+
+  // Ohne Kataster: das erfasste OSM-Gebäude, sofern vorhanden.
   if (ctx.osm?.own) {
     const { feature } = buildingFromOsm(ctx.osm.own, {
       elements: [], timestamp: ctx.osm.source.version,

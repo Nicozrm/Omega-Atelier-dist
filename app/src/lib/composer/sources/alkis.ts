@@ -26,6 +26,7 @@
  */
 
 import type { GeoPoint } from '../types'
+import { isCallerAbort, SOURCE_BUDGET_MS, withDeadline, withinBudget } from './deadline'
 
 /* ────────────────────────────── Rohdaten ────────────────────────────── */
 
@@ -124,14 +125,15 @@ export class HttpAlkisTransport implements AlkisTransport {
   constructor(
     private readonly base = ALKIS_BASE,
     private readonly fetchFn: typeof fetch = (...a) => fetch(...a),
-    private readonly timeoutMs = 20_000,
+    private readonly timeoutMs = SOURCE_BUDGET_MS.alkis,
   ) {}
 
   async items<P>(collection: string, bbox: string, limit: number, signal?: AbortSignal): Promise<AlkisCollection<P>> {
     const url = `${this.base}/collections/${collection}/items?bbox=${bbox}&limit=${limit}&f=json`
     const res = await this.fetchFn(url, {
       headers: { Accept: 'application/geo+json,application/json' },
-      signal: signal ?? AbortSignal.timeout(this.timeoutMs),
+      // Frist UND Aufrufer-Abbruch — nie das eine statt des anderen.
+      signal: withDeadline(signal, this.timeoutMs),
     })
     if (!res.ok) throw new Error(`ALKIS ${res.status} (${collection})`)
     return (await res.json()) as AlkisCollection<P>
@@ -193,13 +195,14 @@ export class AlkisSource {
     const hit = this.cache.get(key)
     if (hit && Date.now() - hit.storedAt < ALKIS_TTL_MS) return hit.site
 
-    try {
+    // Frist auf Quellen-Ebene, damit sie unabhängig vom Transport gilt.
+    return withinBudget(async (deadline) => {
       // Die drei Ebenen parallel — es sind unabhängige Sammlungen, und die
       // Schnittstelle verträgt das problemlos.
       const [parcels, buildings, landUse] = await Promise.all([
-        this.transport.items<ParcelProps>('flurstueck', bbox, 60, signal),
-        this.transport.items<CadastreBuildingProps>('gebaeude_bauwerk', bbox, 120, signal),
-        this.transport.items<LandUseProps>('nutzung', bbox, 60, signal),
+        this.transport.items<ParcelProps>('flurstueck', bbox, 60, deadline),
+        this.transport.items<CadastreBuildingProps>('gebaeude_bauwerk', bbox, 120, deadline),
+        this.transport.items<LandUseProps>('nutzung', bbox, 60, deadline),
       ])
       const site: AlkisSite = {
         parcels: parcels.features ?? [],
@@ -209,11 +212,8 @@ export class AlkisSource {
       }
       if (site.parcels.length === 0 && site.buildings.length === 0) return undefined
       this.cache.set(key, { site, storedAt: Date.now() })
-      return site
-    } catch (err) {
-      if ((err as Error)?.name === 'AbortError') throw err
-      return hit?.site
-    }
+      return site as AlkisSite | undefined
+    }, hit?.site, SOURCE_BUDGET_MS.alkis, signal)
   }
 }
 
