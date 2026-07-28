@@ -56,6 +56,20 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,webmanifest}'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         cleanupOutdatedCaches: true,
+        /**
+         * Ohne `clientsClaim` übernimmt der neue Service Worker die bereits
+         * offene Seite **nicht**. Er aktiviert sich zwar sofort — das setzt
+         * `registerType: 'autoUpdate'` über `skipWaiting` —, steuert danach
+         * aber weiterhin nur neu geöffnete Clients. Ergebnis: nach jedem
+         * Deploy brauchte es zwei Reloads, und der erste zeigte den alten
+         * Stand.
+         *
+         * Das hat echten Schaden angerichtet: ein längst ausgelieferter Fix
+         * galt zweimal als „immer noch kaputt", weil im Browser noch das alte
+         * Bündel lief. Zusammen mit dem Reload auf `controllerchange` in
+         * `main.tsx` ist ein Deploy jetzt nach einem Reload wirklich da.
+         */
+        clientsClaim: true,
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.origin === 'https://fonts.googleapis.com',
