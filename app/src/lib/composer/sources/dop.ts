@@ -180,6 +180,44 @@ function loadImage(url: string, signal?: AbortSignal): Promise<HTMLImageElement 
   })
 }
 
+/**
+ * Ist das geladene Bild ein Luftbild — oder eine leere Fläche?
+ *
+ * Der Deckungsabzug wird als PNG mit Transparenz geholt und ist außerhalb der
+ * Befliegung durchsichtig. Das **große** Bild kommt dagegen als JPEG, und JPEG
+ * kennt keine Transparenz: der Dienst füllt fehlende Bereiche dort schlicht
+ * mit Weiß — bei HTTP 200 und Content-Type `image/jpeg`. Auf dem Boden der
+ * Szene liegt dann eine strahlend weiße Platte, die aussieht wie ein
+ * Renderfehler und keiner ist.
+ *
+ * Ein echtes Luftbild ist niemals einfarbig. Deshalb entscheidet hier die
+ * Streuung: ein Bild ohne nennenswerte Varianz trägt keine Information und
+ * wird verworfen, damit der erzeugte Boden stehen bleibt.
+ */
+function hasDetail(img: HTMLImageElement): boolean {
+  try {
+    const n = 48
+    const cv = document.createElement('canvas')
+    cv.width = cv.height = n
+    const ctx = cv.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return true
+    ctx.drawImage(img, 0, 0, n, n)
+    const { data } = ctx.getImageData(0, 0, n, n)
+    let sum = 0, sumSq = 0, count = 0
+    for (let i = 0; i < data.length; i += 4) {
+      const l = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114)
+      sum += l; sumSq += l * l; count++
+    }
+    const mean = sum / count
+    const sd = Math.sqrt(Math.max(0, sumSq / count - mean * mean))
+    // Gemessen liegt die Standardabweichung eines Wohngebiets bei 30 bis 60.
+    // Unter 6 ist die Fläche praktisch einfarbig.
+    return sd >= 6
+  } catch {
+    return true // nicht auslesbar — dann lieber zeigen als verwerfen
+  }
+}
+
 /** Hat der Abzug überhaupt Inhalt, oder ist er das transparente Nichts? */
 function probeHasPixels(img: HTMLImageElement): boolean {
   try {
@@ -219,8 +257,15 @@ export async function resolveOrthophoto(
     if (!probe) { note(req, `${photo.source.id}: Deckungsabzug nicht ladbar (CORS oder Dienst)`) ; continue }
     if (!probeHasPixels(probe)) { note(req, `${photo.source.id}: hier keine Befliegung`) ; continue }
     const image = await loadOrthophoto(photo, signal)
-    if (image) return { photo, image }
-    note(req, `${photo.source.id}: Bild nicht ladbar (${photo.pixels} px, evtl. zu groß für den Dienst)`)
+    if (!image) {
+      note(req, `${photo.source.id}: Bild nicht ladbar (${photo.pixels} px)`)
+      continue
+    }
+    if (!hasDetail(image)) {
+      note(req, `${photo.source.id}: Bild ist einfarbig — der Dienst hat eine leere Fläche geliefert`)
+      continue
+    }
+    return { photo, image }
   }
   return undefined
 }
