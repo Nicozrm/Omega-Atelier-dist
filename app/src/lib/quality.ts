@@ -18,9 +18,55 @@
  * "Reduce Motion" enabled — a very common iOS setting.
  */
 
-export type Tier = 'high' | 'low' | 'off'
+export type Tier = 'ultra' | 'high' | 'low' | 'off'
 
-const TIER_CLASSES = ['q-high', 'q-low', 'q-off'] as const
+const TIER_CLASSES = ['q-ultra', 'q-high', 'q-low', 'q-off'] as const
+
+/**
+ * Rang der Stufen. Ohne ihn wären Abfragen wie „mindestens hoch" auf
+ * Gleichheitsvergleiche angewiesen — und genau daran wäre `ultra` gescheitert:
+ * im Renderer standen 16 Prüfungen der Form `getTier() === 'high'`. Eine neue,
+ * *höhere* Stufe hätte sie alle auf `false` gesetzt und damit ausgerechnet auf
+ * dem stärksten Gerät die Qualität **gesenkt**. Deshalb vergleicht ab jetzt
+ * niemand mehr auf Gleichheit, sondern über {@link atLeast}.
+ */
+const RANK: Record<Tier, number> = { off: 0, low: 1, high: 2, ultra: 3 }
+
+/** Ist die aktuelle Stufe mindestens `min`? */
+export function atLeast(min: Tier, tier: Tier = getTier()): boolean {
+  return RANK[tier] >= RANK[min]
+}
+
+/** Kurzform für die überall gebrauchte Frage „darf es etwas kosten?". */
+export function isHQ(tier: Tier = getTier()): boolean {
+  return atLeast('high', tier)
+}
+
+/**
+ * Die Maximum-Stufe ist **nie** automatisch. Sie kostet spürbar Bildrate und
+ * hängt an der GPU, die der Browser nicht verrät — `hardwareConcurrency` sagt
+ * nichts über den Grafikchip. Also entscheidet der Mensch, nicht die Heuristik.
+ */
+const OVERRIDE_KEY = 'omega.quality.tier'
+
+export function readOverride(): Tier | null {
+  try {
+    const v = localStorage.getItem(OVERRIDE_KEY)
+    return v && v in RANK ? (v as Tier) : null
+  } catch {
+    return null // Privatmodus o. Ä. — dann eben keine Vorgabe
+  }
+}
+
+/** Setzt die Stufe dauerhaft. `null` gibt die Automatik zurück. */
+export function setOverride(tier: Tier | null): void {
+  try {
+    if (tier) localStorage.setItem(OVERRIDE_KEY, tier)
+    else localStorage.removeItem(OVERRIDE_KEY)
+  } catch { /* nicht speicherbar — gilt dann nur für diese Sitzung */ }
+  _tier = null
+  initQuality()
+}
 
 export function prefersReducedMotion(): boolean {
   return typeof matchMedia === 'function'
@@ -66,7 +112,10 @@ let _tier: Tier | null = null
 /** Determine the tier and mirror it onto <html>. Call once, before first render. */
 export function initQuality(): Tier {
   if (_tier) return _tier
-  _tier = typeof document === 'undefined' ? 'low' : detect()
+  // Die Vorgabe des Nutzers schlägt die Heuristik — in beide Richtungen. Wer
+  // „Maximum" wählt, bekommt es auch auf einem Gerät, das die Automatik
+  // vorsichtig eingestuft hätte; wer heruntersetzt, wird nicht überstimmt.
+  _tier = typeof document === 'undefined' ? 'low' : (readOverride() ?? detect())
   if (typeof document !== 'undefined') {
     const root = document.documentElement
     root.classList.remove(...TIER_CLASSES)

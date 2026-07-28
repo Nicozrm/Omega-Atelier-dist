@@ -78,7 +78,7 @@ import {
 import { cinematicReact } from '@/lib/cinematic'
 import { useUIStore } from '@/store/useUIStore'
 import * as THREE from 'three'
-import { getTier, isMobileDevice } from '@/lib/quality'
+import { getTier, isHQ, isMobileDevice } from '@/lib/quality'
 import { seasonPalette, snowed, mixHex, seasonFromDate, SEASONS, SEASON_LABEL, type Season } from '@/lib/season'
 import { precipParams, seedField, advanceField, seasonalPrecip, PRECIP_LABEL, type Precip } from '@/lib/precipitation'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
@@ -182,7 +182,7 @@ function buildMaterials(): MatCache {
   // Roughness micro-detail maps are uploaded only on the 'high' tier — they add
   // a (cheap, per-fragment) texture sample but cost GPU memory/bandwidth, so weak
   // devices skip them and keep the lean path.
-  const HQ = readTier() === 'high'
+  const HQ = isHQ()
   const rough = (c: HTMLCanvasElement, r: [number, number]) =>
     HQ ? { roughnessMap: makeTex(c, r, false) } : {}
   return {
@@ -446,7 +446,7 @@ function buildMaterials(): MatCache {
     // Real physical glazing: transmission (refraction) on the 'high' tier for
     // that thick, light-bending picture-window look; a cheap transparent
     // dielectric elsewhere so mid/low tiers stay fast. Same singleton either way.
-    glass: readTier() === 'high'
+    glass: isHQ()
       ? new THREE.MeshPhysicalMaterial({
           color: '#eef3f7',
           roughness: 0.06,
@@ -586,7 +586,7 @@ function leanizeForPerf(cache: MatCache): void {
 function ensureMat(): MatCache {
   if (!_mat) {
     _mat = buildMaterials()
-    if (readTier() !== 'high') leanizeForPerf(_mat)
+    if (!isHQ()) leanizeForPerf(_mat)
   }
   return _mat
 }
@@ -686,7 +686,7 @@ function matFromCatalog(material: Material, opts?: { doubleSide?: boolean }): TH
     const g = GLOSS[material.category]
     // The clearcoat/sheen finishes are per-light-expensive; only build them on
     // 'high' devices, otherwise fall back to the cheap standard material.
-    const hq = readTier() === 'high'
+    const hq = isHQ()
     // Catalog floors that had no map render as a flat solid colour. Bind existing
     // textures (reuse — no new generation): concrete screed, wool carpet, walnut
     // parquet. Smooth ceramic stays untextured (polished = flat is correct).
@@ -3228,7 +3228,7 @@ function FurnitureMesh({ furnitureId, w, h, item }: {
         </mesh>
         {/* Real reflection on 'high': a planar reflector mirrors the actual
             scene (deep mirror reflections). Lower tiers keep the cheap chrome. */}
-        {readTier() === 'high' ? (
+        {isHQ() ? (
           <mesh position={[0, 0, depth / 2 + 0.004]}>
             <planeGeometry args={[wM - 0.04, frameH - 0.04]} />
             <MeshReflectorMaterial
@@ -4283,7 +4283,7 @@ function CoveLighting({ rooms }: { rooms: Room[] }) {
         }
 
         // Point lights only on 'high', capped at 2 per room, spaced apart.
-        const lights = tier === 'high' && lightPts.length > 0
+        const lights = isHQ(tier) && lightPts.length > 0
           ? [lightPts[0], lightPts[Math.floor(lightPts.length / 2)]]
           : []
 
@@ -4323,7 +4323,7 @@ function RoomDownlights({ rooms, walkMode }: { rooms: Room[]; walkMode: boolean 
   // rooms stay readable. These lights are shadowless, so the cap is the cost.
   const indoor = rooms
     .filter((r: Room) => (r.zoneType ?? 'indoor') !== 'outdoor' && r.polygon.length >= 3)
-    .slice(0, tier === 'high' ? 10 : tier === 'low' ? 6 : 3)
+    .slice(0, isHQ(tier) ? 10 : tier === 'low' ? 6 : 3)
   return (
     <>
       {indoor.map((r: Room) => {
@@ -5635,8 +5635,21 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
   // region or the quality tier changes — never per frame, and never on a
   // time-of-day change (the renderer re-tints instead of re-planning).
   const tier = readTier()
-  const rich = tier === 'high'
-  const detail: WorldDetail = tier === 'high' ? 'high' : tier === 'low' ? 'low' : 'medium'
+  const rich = isHQ(tier)
+  /**
+   * Die Maximum-Stufe. Sie wird nie automatisch gewählt (siehe `lib/quality`),
+   * sondern nur, wenn jemand sie ausdrücklich einschaltet — und hebt dann genau
+   * die Deckel an, die sonst aus Rücksicht auf schwache Geräte gesetzt sind.
+   *
+   * Bewusst **nicht** dabei: eine größere Schattenkarte. 8192² war der erste
+   * Entwurf und ist ein schlechtes Geschäft — eine einzige Tiefentextur dieser
+   * Größe belegt rund 268 MB, und PCSS verwischt die Penumbra ohnehin, sodass
+   * die zusätzliche Texeldichte am Ergebnis kaum etwas ändert. Die Schärfe
+   * eines Schattens hängt hier an der Enge des Schatten-Frustums, nicht an
+   * seiner Auflösung. Es bleibt bei 4096.
+   */
+  const ULTRA = tier === 'ultra'
+  const detail: WorldDetail = isHQ(tier) ? 'high' : tier === 'low' ? 'low' : 'medium'
   const centreVec = useMemo(() => ({ x: cx, z: cz }), [cx, cz])
   const { world, source: worldSource } = useNeighbourhood({
     planId: doc?.id ?? 'omega',
@@ -5692,7 +5705,13 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
         5×5-Kernel aus `texelSize`. Der Regler war seit jeher tot, und die
         Kantenschärfe hing allein an der Größe der Schattenkarte.
       */}
-      {readTier() === 'high' && <SoftShadows size={12} samples={16} focus={0.6} />}
+      {isHQ() && (
+        <SoftShadows
+          size={ULTRA ? 16 : 12}
+          samples={ULTRA ? 32 : 16}
+          focus={0.6}
+        />
+      )}
       <ambientLight color={new THREE.Color(env.lighting.ambient.color).lerp(new THREE.Color('#ffecd0'), 0.18)} intensity={env.lighting.ambient.intensity * 0.56} />
       {env.sun.aboveHorizon && (
         <directionalLight
@@ -5700,8 +5719,8 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           intensity={env.lighting.sun.intensity}
           color={env.lighting.sun.color}
           castShadow={env.lighting.sun.castShadow}
-          shadow-mapSize-width={readTier() === 'high' ? 4096 : isHandheld() ? 1024 : 2048}
-          shadow-mapSize-height={readTier() === 'high' ? 4096 : isHandheld() ? 1024 : 2048}
+          shadow-mapSize-width={isHQ() ? 4096 : isHandheld() ? 1024 : 2048}
+          shadow-mapSize-height={isHQ() ? 4096 : isHandheld() ? 1024 : 2048}
           shadow-camera-near={0.1}
           shadow-camera-far={50}
           shadow-camera-left={-(Math.max(wM, hM) + 4)}
@@ -5836,7 +5855,7 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
         scale={Math.max(wM, hM) * 1.4}
         blur={2.4}
         far={2.5}
-        resolution={readTier() === 'high' ? 1024 : isHandheld() ? 256 : 512}
+        resolution={isHQ() ? 1024 : isHandheld() ? 256 : 512}
       />
 
       {/* Walls — with corner extensions and pillars for clean joints */}
@@ -6108,7 +6127,26 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
   // load and back UP when headroom returns — a smooth ramp, not the old
   // one-way drop to 1. Material quality is never touched.
   const dprCap = useMemo(() => Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, isHandheld() ? 1.5 : 2), [])
-  const [dprMax, setDprMax] = useState(() => Math.min(Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, isHandheld() ? 1.5 : 2), isHandheld() ? 1.25 : 1.75))
+  /**
+   * Maximum-Stufe: siehe `lib/quality`. Nie automatisch, immer bewusst gewählt.
+   * Hier steuert sie Kantenglättung, Verdeckungsrechnung und Pixeldichte.
+   */
+  const ultra = readTier() === 'ultra'
+  /**
+   * Die Deckelung der Pixeldichte ist der stillste Qualitätsverlust im ganzen
+   * Renderer: auf einem Retina-Display mit `devicePixelRatio` 2 (oder 3) wurde
+   * bisher auf 1,75 begrenzt und anschließend hochskaliert. Jede Kante büßt
+   * dabei Schärfe ein — unabhängig davon, wie gut MSAA und SMAA arbeiten.
+   *
+   * In der Maximum-Stufe wird bis zur tatsächlichen Gerätedichte gerendert,
+   * höchstens aber 2,5: darüber wächst nur die Füllrate, nicht das, was das
+   * Auge unterscheiden kann.
+   */
+  const [dprMax, setDprMax] = useState(() => {
+    const device = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+    if (ultra) return Math.min(device, 2.5)
+    return Math.min(Math.min(device, isHandheld() ? 1.5 : 2), isHandheld() ? 1.25 : 1.75)
+  })
   // v17 — warm the texture cache (IndexedDB or generate) before mounting the 3D Canvas
   const [texturesReady, setTexturesReady] = useState(false)
   useEffect(() => {
@@ -6476,20 +6514,31 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
                 and contrast here. Only the heavy branch below — MSAA 4x, N8AO,
                 DOF, bloom — stays desktop-only. */}
             <RenderFXBoundary>
-              {readTier() === 'high' && dprMax > 1 && !isMobileDevice() ? (
+              {isHQ() && dprMax > 1 && !isMobileDevice() ? (
                 /* MSAA 4× resolves geometry edges BEFORE post, then SMAA cleans
                    the shaded/sub-pixel edges — together they kill the jaggies on
                    walls, furniture and the neighbourhood roofs. */
-                <EffectComposer multisampling={4}>
-                  {/* N8AO — modern high-quality ambient occlusion (contact darkening
-                      in corners / under furniture), a big step up from SSAO for the
-                      grounded archviz look. Half-res + medium quality stays perf-safe. */}
+                <EffectComposer multisampling={ultra ? 8 : 4}>
+                  {/* N8AO — Umgebungsverdeckung: die Abdunklung in Ecken und unter
+                      Möbeln, die einen Raum überhaupt erst „gestellt" aussehen
+                      lässt.
+
+                      `halfRes` war hier der größte einzelne Qualitätsdeckel im
+                      ganzen Post-Stack: die Verdeckung wurde auf halber Kantenlänge
+                      gerechnet, also mit einem Viertel der Bildpunkte, und
+                      anschließend hochskaliert. Feine Kontaktkanten — Stuhlbein auf
+                      Parkett, Sockelleiste an der Wand — verschmieren dabei.
+
+                      In der Maximum-Stufe fällt der Deckel: volle Auflösung,
+                      Qualität „ultra", größerer Radius. Darunter bleibt es
+                      bewusst bei halber Auflösung, weil AO die teuerste Rechnung
+                      im Bild ist. */}
                   <N8AO
-                    aoRadius={0.9}
+                    aoRadius={ultra ? 1.2 : 0.9}
                     distanceFalloff={1.0}
-                    intensity={2.6}
-                    quality="medium"
-                    halfRes
+                    intensity={ultra ? 3.0 : 2.6}
+                    quality={ultra ? 'ultra' : 'medium'}
+                    halfRes={!ultra}
                     color="#080810"
                   />
                   {/* Contextual DOF — focal plane rides the orbit target; the

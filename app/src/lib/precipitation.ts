@@ -44,10 +44,14 @@ const BASE: Record<Exclude<Precip, 'none'>, PrecipParams> = {
  * Field parameters for a quality tier. Counts scale down hard off the high
  * tier: precipitation is atmosphere, never the thing that costs the frame.
  */
-export function precipParams(kind: Precip, tier: 'high' | 'low' | 'off' = 'high'): PrecipParams | null {
+// Dieses Modul bleibt bewusst frei von Renderer- und App-Abhängigkeiten, damit
+// es ohne WebGL-Kontext testbar ist. Deshalb steht die Stufe hier als eigener
+// Union-Typ statt aus `lib/quality` importiert zu werden. `ultra` verhält sich
+// wie `high`: mehr Tropfen wären keine bessere Grafik, nur mehr Punkte.
+export function precipParams(kind: Precip, tier: 'ultra' | 'high' | 'low' | 'off' = 'high'): PrecipParams | null {
   if (kind === 'none') return null
   const base = BASE[kind]
-  const scale = tier === 'high' ? 1 : tier === 'low' ? 0.45 : 0.22
+  const scale = tier === 'ultra' || tier === 'high' ? 1 : tier === 'low' ? 0.45 : 0.22
   return { ...base, count: Math.max(80, Math.round(base.count * scale)) }
 }
 

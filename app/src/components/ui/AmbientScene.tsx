@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { getTier, prefersReducedMotion } from '@/lib/quality'
+import { getTier, isHQ, prefersReducedMotion } from '@/lib/quality'
 
 /**
  * AmbientScene — a GPU-light cinematic atmosphere rendered *behind* the app
@@ -51,7 +51,7 @@ export function AmbientScene() {
     const ctx = canvas ? canvas.getContext('2d') : null
     let w = 0
     let h = 0
-    const count = tier === 'high' ? 56 : 26
+    const count = isHQ(tier) ? 56 : 26
 
     const seed = () => {
       const arr: Particle[] = []

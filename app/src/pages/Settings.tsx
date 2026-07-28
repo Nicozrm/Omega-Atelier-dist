@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, Sun, Moon, Palette, SlidersHorizontal, LifeBuoy, Info, Volume2, VolumeX, Sparkles } from 'lucide-react'
+import { ArrowLeft, Sun, Moon, Palette, SlidersHorizontal, LifeBuoy, Info, Volume2, VolumeX, Sparkles, Gauge } from 'lucide-react'
 import { useUIStore } from '@/store/useUIStore'
 import { usePlanStore } from '@/store/usePlanStore'
 import { isSoundEnabled, setSoundEnabled, play as playSound } from '@/lib/sound'
 import { isCinematicEnabled, setCinematicEnabled, cinematicReact } from '@/lib/cinematic'
+import { readOverride, setOverride, type Tier } from '@/lib/quality'
 
 export function SettingsPage() {
   const theme = useUIStore((s) => s.theme)
@@ -12,6 +13,8 @@ export function SettingsPage() {
   const resetOnboarding = useUIStore((s) => s.setOnboardingShown)
   const [sound, setSound] = useState(isSoundEnabled())
   const [cinematic, setCinematic] = useState(isCinematicEnabled())
+  // 'auto' heißt: keine Vorgabe gespeichert, die Heuristik entscheidet.
+  const [quality, setQuality] = useState<Tier | 'auto'>(() => readOverride() ?? 'auto')
 
   const doc = usePlanStore((s) => s.doc)
   const updateDoc = usePlanStore((s) => s.updateDoc)
@@ -43,6 +46,42 @@ export function SettingsPage() {
               >
                 {t === 'dark' ? <Moon size={14} /> : <Sun size={14} />}
                 {t === 'dark' ? 'Dunkel' : 'Hell'}
+              </button>
+            ))}
+          </div>
+
+          {/* 3D-Qualität — bewusst manuell.
+              Der Browser verrät den Grafikchip nicht; `hardwareConcurrency`
+              sagt nichts über die GPU. Die Automatik muss deshalb vorsichtig
+              schätzen und liegt auf einer starken Maschine systematisch zu
+              niedrig. Diese Entscheidung kann nur treffen, wer auf den
+              Bildschirm sieht. */}
+          <p className="pt-1 text-xs text-[color:var(--muted)]">
+            3D-Qualität. „Maximum" hebt Schattenauflösung, Verdeckungsrechnung,
+            Kantenglättung und Pixeldichte an — sichtbar schöner, spürbar
+            teurer. Greift beim nächsten Öffnen der 3D-Ansicht.
+          </p>
+          <div className="flex gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-2)] p-1">
+            {([
+              ['auto', 'Automatik'],
+              ['high', 'Hoch'],
+              ['ultra', 'Maximum'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => {
+                  playSound('click')
+                  setOverride(value === 'auto' ? null : value)
+                  setQuality(value)
+                }}
+                className={`spring-press flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  quality === value
+                    ? 'bg-[color:var(--accent)] text-black shadow-sm'
+                    : 'text-[color:var(--muted)] hover:text-[color:var(--fg)]'
+                }`}
+              >
+                {value === 'ultra' && <Gauge size={14} />}
+                {label}
               </button>
             ))}
           </div>
