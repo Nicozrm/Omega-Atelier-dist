@@ -32,6 +32,7 @@ export * from './streetNetwork'
 export * from './plots'
 export * from './amenities'
 export * from './traffic'
+export * from './fromOsm'
 
 /** How much of the living layer to generate — scales with the render tier. */
 export type WorldDetail = 'low' | 'medium' | 'high'

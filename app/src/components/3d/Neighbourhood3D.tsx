@@ -354,8 +354,27 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean): React.ReactNode {
   // a neighbour's shadow is visible at all.
   const casts = h.distanceM < SHADOW_RANGE_M
 
-  // Body + plinth
-  parts.push(<mesh key="b" position={[0, H / 2, 0]} castShadow={casts} receiveShadow material={facade}><boxGeometry args={[W, H, D]} /></mesh>)
+  // Body. Ein erfasster Umriss wird extrudiert; ohne Quelle bleibt es der
+  // Quader aus Breite × Tiefe. Das ist der einzige Unterschied zwischen
+  // vermessener und erfundener Nachbarschaft im gesamten Renderer.
+  if (h.footprint && h.footprint.length >= 3) {
+    const shape = new THREE.Shape()
+    // `ExtrudeGeometry` baut in der x/y-Ebene und extrudiert nach +z. Um daraus
+    // ein aufrechtes Gebäude zu machen, wird die Geometrie um −90° um x gekippt:
+    // (sx, sy, d) → (sx, d, −sy). Die Extrusionstiefe wird damit zur Höhe, und
+    // die Umriss-Achse y landet auf −z, weshalb z hier gespiegelt eingetragen
+    // wird. Mit +90° stünde das Haus spiegelverkehrt **unter** dem Boden.
+    shape.moveTo(h.footprint[0].x, -h.footprint[0].z)
+    for (let i = 1; i < h.footprint.length; i++) shape.lineTo(h.footprint[i].x, -h.footprint[i].z)
+    shape.closePath()
+    parts.push(
+      <mesh key="b" rotation={[-Math.PI / 2, 0, 0]} castShadow={casts} receiveShadow material={facade}>
+        <extrudeGeometry args={[shape, { depth: H, bevelEnabled: false, curveSegments: 1 }]} />
+      </mesh>,
+    )
+  } else {
+    parts.push(<mesh key="b" position={[0, H / 2, 0]} castShadow={casts} receiveShadow material={facade}><boxGeometry args={[W, H, D]} /></mesh>)
+  }
   if (mid) parts.push(<mesh key="pl" position={[0, 0.16, 0]} material={m.plinth}><boxGeometry args={[W + 0.06, 0.32, D + 0.06]} /></mesh>)
 
   // Roof

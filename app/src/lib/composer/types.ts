@@ -3,6 +3,9 @@ import type { LocalFrame } from './frame'
 import type {
   NeighbourhoodSummary, OsmBuilding, OsmPoi, OsmRoad,
 } from './resolvers/osmResolver'
+import type {
+  CadastralParcel, CadastreBuilding, LandUseArea,
+} from './resolvers/alkisResolver'
 
 /**
  * types.ts — the Composer's shared vocabulary.
@@ -102,6 +105,11 @@ export interface AnalysisContext {
    */
   osm?: OsmObservations
   /**
+   * Was das amtliche Liegenschaftskataster zum Standort weiß. Nur in NRW
+   * belegt; außerhalb bleibt es leer und die Pipeline verhält sich unverändert.
+   */
+  alkis?: AlkisObservations
+  /**
    * The parcel the user drew, already projected into the local metric frame,
    * rotated into its own axes and normalised to start at the origin.
    *
@@ -122,6 +130,18 @@ export interface OsmObservations {
   pois: OsmPoi[]
   summary: NeighbourhoodSummary
   /** Datenstand und Abrufzeit, für die Quellenangabe. */
+  source: SourceRef
+}
+
+/** Beobachtungen aus dem Liegenschaftskataster. */
+export interface AlkisObservations {
+  parcels: CadastralParcel[]
+  /** Das Flurstück, das die Zeichnung meint — oder das unter dem Tipp liegt. */
+  own?: CadastralParcel
+  buildings: CadastreBuilding[]
+  /** Das Hauptgebäude auf dem eigenen Flurstück. */
+  ownBuilding?: CadastreBuilding
+  landUse: LandUseArea[]
   source: SourceRef
 }
 
@@ -193,6 +213,8 @@ export interface PropertyFeature {
   }
   /** Name der erschließenden Straße, sofern erfasst. */
   streetName?: string
+  /** Amtliche Bezeichnung, z. B. „Borghorst, Flur 017, Flurstück 666". */
+  parcelLabel?: string
 }
 
 /** One volume of the building — the house itself or an attachment. */
