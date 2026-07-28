@@ -20,7 +20,8 @@
  * Materials and cloned textures are disposed when the world changes.
  */
 
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { quantise, type Rgb } from '@/lib/world/roofColours'
 import { RoundedBox } from '@react-three/drei'
@@ -32,7 +33,7 @@ import { seasonPalette, snowed, mixHex, type Season } from '@/lib/season'
 import type { DayPhase } from '@/lib/environment'
 import {
   alongSegment, cityStyleSpec,
-  type Amenity, type HouseSpec, type Neighbourhood, type ParkSpec,
+  type Amenity, type HouseLod, type HouseSpec, type Neighbourhood, type ParkSpec,
   type StreetFurniture, type StreetSegment, type TreeKind, type Vec2,
 } from '@/lib/world'
 
@@ -1168,9 +1169,59 @@ function parkNode(park: ParkSpec, mats: MatBag, rich: boolean, realGround = fals
 
 /* ────────────────────────────── Component ───────────────────────────── */
 
+/**
+ * Wie grob der Kamera-Anker gerastert wird, in Metern.
+ *
+ * Die Detailstufe muss an der Kamera hängen (siehe unten), aber sie darf nicht
+ * an *jedem Bild* neu bestimmt werden — das hieße, den gesamten Knotenbaum aus
+ * hunderten Gebäuden pro Frame neu aufzubauen. 25 m ist der Kompromiss: fein
+ * genug, dass die Aufwertung beim Heranfahren rechtzeitig kommt, grob genug,
+ * dass eine ruhige Kamerabewegung nur wenige Neuaufbauten auslöst.
+ */
+const LOD_ANCHOR_STEP_M = 25
+
+/** Rang der Detailstufen — `massing` ist die grobste. */
+const RANK_LOD: Record<HouseLod, number> = { massing: 0, simple: 1, full: 2 }
+
 export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture, sampleGround }: Props) {
+  /**
+   * Der Bezugspunkt der Detailstufe.
+   *
+   * Bisher stand die Stufe jedes Nachbargebäudes fest, sobald die Welt gebaut
+   * war — berechnet aus der Entfernung zum **Plan-Mittelpunkt**. Bei knapp 700
+   * Katastergebäuden ist damit fast alles `massing`, also eine reine Box, und
+   * die bleibt eine Box, egal wie nah man heranzoomt. Genau deshalb wurde die
+   * Ansicht beim Hineinzoomen schlechter statt besser.
+   *
+   * Jetzt zählt die Entfernung zur Kamera. Gerastert auf
+   * {@link LOD_ANCHOR_STEP_M}, damit der Knotenbaum nicht pro Frame entsteht.
+   */
+  const [anchor, setAnchor] = useState<{ x: number; z: number }>({ x: 0, z: 0 })
+  const lastAnchor = useRef(anchor)
+  useFrame(({ camera }) => {
+    const q = (v: number) => Math.round(v / LOD_ANCHOR_STEP_M) * LOD_ANCHOR_STEP_M
+    const next = { x: q(camera.position.x), z: q(camera.position.z) }
+    if (next.x === lastAnchor.current.x && next.z === lastAnchor.current.z) return
+    lastAnchor.current = next
+    setAnchor(next)
+  })
+
+  /**
+   * Materialien und Texturen — bewusst **ohne** den Kamera-Anker in den
+   * Abhängigkeiten.
+   *
+   * Sie hier gemeinsam mit den Knoten neu zu bauen wäre ein schlimmerer Fehler
+   * als der, den die kamerabezogene Detailstufe behebt: `buildMaterials`
+   * erzeugt prozedurale Texturen und Materialien und gibt die alten frei. Alle
+   * 25 m Kamerabewegung wäre das ein Neuaufbau des gesamten Materialsatzes —
+   * spürbares Stocken und GPU-Speicher, der auf- und abgebaut wird.
+   */
+  const mats = useMemo(
+    () => buildMaterials(world, season, daylightScale, phase),
+    [world, season, daylightScale, phase],
+  )
+
   const built = useMemo(() => {
-    const mats = buildMaterials(world, season, daylightScale, phase)
     const nodes: React.ReactNode[] = []
 
     // Dachfarben aus dem Luftbild.
@@ -1281,7 +1332,18 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     }
 
     nodes.push(...streetNodes(world, mats, rich, !!groundTexture))
-    for (const h of world.houses) nodes.push(houseNode(h, mats, rich, !!groundTexture, roofOverride.get(h)))
+    // Die Stufen sind absichtlich enger als die des Weltgenerators: dort geht
+    // es um das Budget der ganzen Szene, hier um das, was gerade im Bild ist.
+    const FULL_M = 55, SIMPLE_M = 130
+    for (const h of world.houses) {
+      const d = Math.hypot(h.centre.x - anchor.x, h.centre.z - anchor.z)
+      const lod: HouseLod = d <= FULL_M ? 'full' : d <= SIMPLE_M ? 'simple' : 'massing'
+      // Nie *unter* die Einstufung des Generators fallen: der kennt das
+      // Gesamtbudget der Szene und hat Gründe für seine Obergrenze.
+      const effective: HouseLod = RANK_LOD[lod] < RANK_LOD[h.lod] ? lod : h.lod
+      const shown = effective === h.lod ? h : { ...h, lod: effective }
+      nodes.push(houseNode(shown, mats, rich, !!groundTexture, roofOverride.get(h)))
+    }
     for (const a of world.amenities) nodes.push(amenityNode(a, mats, rich))
     if (world.park) nodes.push(parkNode(world.park, mats, rich, !!groundTexture))
     for (const [i, f] of world.furniture.entries()) {
@@ -1290,16 +1352,23 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
       nodes.push(furnitureNode(f, i, mats))
     }
 
-    return { nodes, mats }
-  }, [world, phase, daylightScale, season, rich, groundTexture, sampleGround])
+    return { nodes }
+  }, [world, mats, rich, groundTexture, sampleGround, anchor])
 
+  // Freigabe hängt an **`mats`**, nicht am Knotenbaum.
+  //
+  // Seit die Detailstufe an der Kamera hängt, entsteht der Knotenbaum bei jeder
+  // Bewegung neu — mit `[built]` als Abhängigkeit hätte dieser Effekt die
+  // Materialien und Texturen also alle 25 m weggeworfen, während sie noch in
+  // Gebrauch sind. Aufgeräumt wird, wenn der Materialsatz ersetzt wird, und
+  // nur dann.
   useEffect(() => {
-    const { all, textures } = built.mats
+    const { all, textures } = mats
     return () => {
       all.forEach((mm) => mm.dispose())
       textures.forEach((t) => t.dispose())
     }
-  }, [built])
+  }, [mats])
 
   return <Static>{built.nodes}</Static>
 }
