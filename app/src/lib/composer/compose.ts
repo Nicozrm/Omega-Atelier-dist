@@ -66,6 +66,16 @@ export async function composeProject(input: AnalysisInput, opts: AnalyzeOptions 
 
   if (signal?.aborted) throw new AnalysisCanceledError()
   const project = draftToProject(draft)
+  // Der Plan merkt sich, wo er steht. `generateProject` tat das schon; der
+  // Wizard-Pfad lief bisher daran vorbei und verlor den Anker — und damit die
+  // Möglichkeit, später die echte Nachbarschaft und einen ortstreuen
+  // Sonnenstand zu zeigen.
+  project.geo = {
+    lat: scene.origin.lat,
+    lng: scene.origin.lng,
+    orientationDeg: scene.property.orientationDeg,
+    ...(scene.property.streetName ? { label: scene.property.streetName } : {}),
+  }
   onProgress?.({ phase: 'project', index: total, total, label: PHASE_LABEL.project, confidence: scene.confidence.overall })
   await sleep(delay, signal)
 

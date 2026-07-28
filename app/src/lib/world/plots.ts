@@ -72,6 +72,23 @@ export type HouseLod = 'full' | 'simple' | 'massing'
 export interface HouseSpec {
   plot: Plot
   lod: HouseLod
+  /**
+   * Der **echte** Gebäudeumriss, wenn er aus einer Quelle stammt (OSM, später
+   * LoD2) — in Metern, relativ zum Gebäudemittelpunkt.
+   *
+   * Fehlt er, zeichnet der Renderer wie bisher einen Quader aus `widthM` ×
+   * `depthM`. Damit ist der Unterschied zwischen erfundener und vermessener
+   * Nachbarschaft genau ein optionales Feld, und beide Wege teilen sich den
+   * gesamten übrigen Renderer.
+   */
+  footprint?: Vec2[]
+  /**
+   * Wie gut der Umriss sein umschließendes Rechteck ausfüllt, 0…1.
+   * Ein Satteldach über einem L-förmigen Haus würde die Kerbe überdecken —
+   * unterhalb eines Schwellwerts zeichnet der Renderer deshalb ein flaches
+   * Dach mit Attika statt einer Firstlinie.
+   */
+  footprintFill?: number
   /** Straight-line distance from the plan centre, metres. */
   distanceM: number
   /**

@@ -88,6 +88,7 @@ import {
 } from '@/lib/proceduralTextures'
 import { Static, BATCH_MIN, batchStatic } from './Static'
 import { Neighbourhood3D } from './Neighbourhood3D'
+import { useNeighbourhood, type WorldSource } from './useNeighbourhood'
 import { StreetLife } from './StreetLife'
 import {
   generateNeighbourhood, seedForPlan, latitudeForStyle,
@@ -5616,10 +5617,10 @@ function GhostFloors({ floors, activeId }: { floors: Floor[]; activeId: string }
   return <Static>{built.nodes}</Static>
 }
 
-function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHouse, stackView, houseStyle, residents, onResidentStatus, season, precip, cityStyle, streetLife }: {
+function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHouse, stackView, houseStyle, residents, onResidentStatus, season, precip, cityStyle, streetLife, onWorldSource }: {
   env: EnvironmentState; floorVariant: FloorVariant; wallMaterialId: string; walkMode: boolean; envPreset: EnvPreset; showHouse: boolean;
   stackView: boolean; houseStyle: HouseStyle; residents: number; onResidentStatus?: (s: ResidentStatus) => void; season: Season; precip: Precip;
-  cityStyle: CityStyle; streetLife: boolean;
+  cityStyle: CityStyle; streetLife: boolean; onWorldSource?: (s: WorldSource) => void;
 }) {
   const doc = usePlanStore((s) => s.doc)
   const floor = useMemo(() => doc?.floors.find((f) => f.id === doc?.activeFloorId), [doc])
@@ -5636,16 +5637,17 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
   const tier = readTier()
   const rich = tier === 'high'
   const detail: WorldDetail = tier === 'high' ? 'high' : tier === 'low' ? 'low' : 'medium'
-  const world = useMemo(
-    () => generateNeighbourhood({
-      style: cityStyle,
-      centre: { x: cx, z: cz },
-      widthM: wM, depthM: hM,
-      detail,
-      seed: seedForPlan(doc?.id ?? 'omega', cityStyle),
-    }),
-    [cityStyle, cx, cz, wM, hM, detail, doc?.id],
-  )
+  const centreVec = useMemo(() => ({ x: cx, z: cz }), [cx, cz])
+  const { world, source: worldSource } = useNeighbourhood({
+    planId: doc?.id ?? 'omega',
+    geo: doc?.geo,
+    style: cityStyle,
+    detail,
+    centre: centreVec,
+    widthM: wM,
+    depthM: hM,
+  })
+  useEffect(() => { onWorldSource?.(worldSource) }, [worldSource, onWorldSource])
 
   return (
     <>
@@ -5996,6 +5998,8 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
   const [cityStyle, setCityStyle] = useState<CityStyle>(() => loadCityStyle())
   const [streetLife, setStreetLife] = useState(() => readTier() !== 'low')
   const pickCityStyle = (s: CityStyle) => { setCityStyle(s); saveCityStyle(s) }
+  // Zeigt die Ansicht die vermessene Nachbarschaft oder die angenommene?
+  const [worldSource, setWorldSource] = useState<WorldSource>('generated')
   const [contextLost, setContextLost] = useState(false)
   const [diag, setDiag] = useState<DiagReport | null>(null)
   const { can } = useTier()
@@ -6189,6 +6193,16 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
               {/* Stadtstil — regenerates the surrounding neighbourhood in another
                   building culture (streets, plots, roofs, facades, vegetation). */}
               <span className="mx-0.5 h-4 w-px bg-[color:var(--border)]" aria-hidden="true" />
+              <span
+                className={`mr-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                  worldSource === 'osm'
+                    ? 'bg-[color:var(--color-omega-success)]/20 text-[color:var(--color-omega-success)]'
+                    : 'text-[color:var(--muted)]'
+                }`}
+                title={worldSource === 'osm'
+                  ? 'Die Umgebung stammt aus OpenStreetMap — echte Gebäude, echte Straßen.'
+                  : 'Die Umgebung ist prozedural erzeugt. Sobald der Plan einen Ort kennt, wird sie durch die echte ersetzt.'}
+              >{worldSource === 'osm' ? 'Echt' : 'Modell'}</span>
               <div className="flex items-center gap-0.5" role="group" aria-label="Stadtstil">
                 {CITY_STYLES.map((cs) => (
                   <button
@@ -6430,7 +6444,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             <CaptureHelper captureRef={captureRef} />
             {!walkMode && <CinematicDirector req={flyReq} hud={tourHud} onTourEnd={endTour} />}
             <ToneMapController photo={photoLook} />
-            <Scene env={env} floorVariant={floorVariant} wallMaterialId={wallMaterialId} walkMode={walkMode} envPreset={envPreset} showHouse={showHouse} stackView={stackView} houseStyle={houseStyle} residents={residents} onResidentStatus={setResidentStatus} season={season} precip={precip} cityStyle={cityStyle} streetLife={streetLife} />
+            <Scene env={env} floorVariant={floorVariant} wallMaterialId={wallMaterialId} walkMode={walkMode} envPreset={envPreset} showHouse={showHouse} stackView={stackView} houseStyle={houseStyle} residents={residents} onResidentStatus={setResidentStatus} season={season} precip={precip} cityStyle={cityStyle} streetLife={streetLife} onWorldSource={setWorldSource} />
             {/* Mobile keeps the cheap pass (SMAA + grading, no MSAA target):
                 the black canvas turned out to be the reduced-motion tier, not
                 post-processing, so there is no reason to give up edge quality

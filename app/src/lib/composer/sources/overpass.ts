@@ -158,7 +158,14 @@ export interface SiteQueryRadii {
   contextM: number
 }
 
-export const DEFAULT_RADII: SiteQueryRadii = { buildingM: 60, roadM: 180, contextM: 500 }
+/**
+ * Der Gebäude-Radius dient zwei Zwecken: der Analyse (dort genügen 60 m rund
+ * um das Grundstück) und der 3D-Nachbarschaft (die will den ganzen Straßenzug).
+ * Beide teilen sich **eine** Abfrage und damit einen Cache-Eintrag — ein
+ * getrennter enger Radius würde nur eine zweite Anfrage an einen kostenlosen
+ * Dienst kosten, ohne etwas zu verbessern.
+ */
+export const DEFAULT_RADII: SiteQueryRadii = { buildingM: 220, roadM: 260, contextM: 550 }
 
 /**
  * Die Standortabfrage: alles, was die Phasen 1–5 aus OSM beziehen können, in
