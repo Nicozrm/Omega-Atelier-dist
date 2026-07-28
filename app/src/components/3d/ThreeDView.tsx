@@ -88,6 +88,7 @@ import {
 } from '@/lib/proceduralTextures'
 import { Static, BATCH_MIN, batchStatic } from './Static'
 import { Neighbourhood3D } from './Neighbourhood3D'
+import { useOrthophotoGround } from './useOrthophotoGround'
 import { useNeighbourhood, type WorldSource } from './useNeighbourhood'
 import { StreetLife } from './StreetLife'
 import {
@@ -5697,6 +5698,25 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
   })
   useEffect(() => { onWorldSource?.(worldSource) }, [worldSource, onWorldSource])
 
+  /**
+   * Das amtliche Luftbild als Boden.
+   *
+   * Die bestellte Kantenlänge muss **exakt** der Grundebene in
+   * `Neighbourhood3D` entsprechen (`extentM × 2.4`); andernfalls liegt das Bild
+   * zwar da, aber im falschen Maßstab, und die Häuser stünden neben ihren
+   * eigenen Dächern.
+   *
+   * 2048 px auf eine typische Kante von rund 200 m sind etwa 10 cm je Pixel —
+   * genau die native Auflösung der NRW-Befliegung. Mehr Pixel brächten keine
+   * zusätzliche Information, nur Bytes; in der Maximum-Stufe sind es trotzdem
+   * 4096, weil dort auch größere Grundstücke scharf bleiben sollen.
+   */
+  const ortho = useOrthophotoGround({
+    geo: doc?.geo,
+    groundSizeM: world.extentM * 2.4,
+    pixels: ULTRA ? 4096 : 2048,
+  })
+
   return (
     <>
       {/* Environment lighting — ambient + hemisphere come from the environment
@@ -5823,6 +5843,7 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
         daylightScale={env.lighting.exteriorAlbedoScale}
         season={season}
         rich={rich}
+        groundTexture={ortho.texture}
       />
 
       {/* Traffic and people. Off in walkthrough (the camera is inside anyway)

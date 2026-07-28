@@ -55,6 +55,11 @@ interface Props {
   season: Season
   /** Full trim only where it can be seen. */
   rich: boolean
+  /**
+   * Amtliches Luftbild als Bodentextur, exakt auf die Kantenlänge der
+   * Grundebene bestellt. Fehlt es, bleibt die erzeugte Rasenfläche stehen.
+   */
+  groundTexture?: THREE.Texture | null
 }
 
 /* ────────────────────────────── Materials ────────────────────────────── */
@@ -1102,18 +1107,53 @@ function parkNode(park: ParkSpec, mats: MatBag, rich: boolean): React.ReactNode 
 
 /* ────────────────────────────── Component ───────────────────────────── */
 
-export function Neighbourhood3D({ world, phase, daylightScale, season, rich }: Props) {
+export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture }: Props) {
   const built = useMemo(() => {
     const mats = buildMaterials(world, season, daylightScale, phase)
     const nodes: React.ReactNode[] = []
 
     // Ground plane under everything — blocks, verges and the space beyond.
     const size = world.extentM * 2.4
-    nodes.push(
-      <mesh key="ground" position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={mats.m.lawn}>
-        <planeGeometry args={[size, size]} />
-      </mesh>,
-    )
+
+    // Liegt ein amtliches Luftbild vor, ist *es* der Boden. Die Textur ist auf
+    // exakt diese Kantenlänge bestellt worden (siehe `useOrthophotoGround`),
+    // deckt die Ebene also 1:1 — deshalb kein `repeat`, kein Versatz.
+    //
+    // Die Ausrichtung stimmt ohne Zutun: die Ebene wird um −90° um x gekippt,
+    // ihre lokale +y-Achse zeigt danach nach −z, also nach Norden. Texturen
+    // werden in three standardmäßig gespiegelt geladen (`flipY`), sodass die
+    // oberste Bildzeile — beim WMS der Norden — bei v = 1 landet. Norden oben
+    // im Bild wird Norden in der Szene.
+    //
+    // `MeshBasicMaterial` wäre falsch: der Boden muss Schatten annehmen, sonst
+    // schwebt das Haus über seinem eigenen Luftbild.
+    if (groundTexture) {
+      nodes.push(
+        <mesh
+          key="ground"
+          position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]}
+          rotation={[-Math.PI / 2, 0, 0]}
+          receiveShadow
+        >
+          <planeGeometry args={[size, size]} />
+          <meshStandardMaterial
+            map={groundTexture}
+            roughness={0.94}
+            metalness={0}
+            // Das Luftbild bringt seine eigene Beleuchtung mit — Sonnenstand,
+            // Schatten, Jahreszeit der Befliegung. Ein zweites Mal voll zu
+            // beleuchten überstrahlt es; die Szene darf es nur noch tönen.
+            envMapIntensity={0.35}
+          />
+        </mesh>,
+      )
+    } else {
+      nodes.push(
+        <mesh key="ground" position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={mats.m.lawn}>
+          <planeGeometry args={[size, size]} />
+        </mesh>,
+      )
+    }
 
     nodes.push(...streetNodes(world, mats, rich))
     for (const h of world.houses) nodes.push(houseNode(h, mats, rich))
@@ -1126,7 +1166,7 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich }: P
     }
 
     return { nodes, mats }
-  }, [world, phase, daylightScale, season, rich])
+  }, [world, phase, daylightScale, season, rich, groundTexture])
 
   useEffect(() => {
     const { all, textures } = built.mats
