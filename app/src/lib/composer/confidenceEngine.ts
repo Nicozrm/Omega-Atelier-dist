@@ -1,10 +1,18 @@
 /**
- * confidenceEngine.ts — the ConfidenceEngine.
+ * confidenceEngine.ts — how sure the run actually is.
  *
- * Rolls the per-feature confidences up into one report: a score per canonical
- * object plus a weighted overall. Interior layout is always the least certain
- * value — the aerial can't see inside, so the floor plan is a plausible guess
- * and is scored accordingly, which the UI surfaces so users know what to check.
+ * Previously this module *estimated* confidence: it read a number each detector
+ * had made up (`0.9 + rng.range(0, 0.08)`) and averaged them. The result looked
+ * like a measurement error bar and was nothing of the sort — a fabricated
+ * parcel scored 94 %.
+ *
+ * Now the score is **derived from provenance** (see `provenance.ts`). A value
+ * the user drew scores 1.0; something read from an authoritative source scores
+ * ~0.96; something the generator invented scores ~0.35. Nothing here invents a
+ * number any more — this module only weights and aggregates.
+ *
+ * The practical consequence is the point of the exercise: while the pipeline
+ * still guesses the building, the roof and the interior, it now *says so*.
  */
 
 import type {
@@ -17,6 +25,7 @@ import type {
   TerrainProfile,
   VegetationFeature,
 } from './types'
+import { aggregateConfidence, assumed, type Provenance } from './provenance'
 
 export interface ConfidenceInput {
   property: PropertyFeature
@@ -53,42 +62,49 @@ function meanConfidence(items: { confidence: number }[], fallback: number): numb
 }
 
 export function computeConfidence(input: ConfidenceInput): ConfidenceReport {
-  const { property, building, roof, terrain, vegetation, rng } = input
+  const { property, building, rng } = input
+  void rng // no longer a source of confidence — kept for signature stability
 
   const garagePart = building.parts.find((p) => p.kind === 'garage' || p.kind === 'carport')
-  const vegItems = [
-    ...vegetation.plants,
-    ...vegetation.hedges,
-    ...vegetation.pools,
-  ]
 
-  // Interior is never observed from above — a plausible floor plan scores low.
-  const interior = clamp01(0.38 + rng.fork(0x494e5452).range(0, 0.14))
+  /**
+   * Everything except the parcel is still generated rather than observed, so it
+   * all carries the `assumed` base. As real resolvers land (OSM in slice 2,
+   * LoD2 in slice 3) these entries move up on their own — the aggregation does
+   * not need to change, only the provenance the detectors report.
+   */
+  const provenance: Record<ConfidenceKey, Provenance> = {
+    property: property.provenance.geometry,
+    building: 'assumed',
+    roof: 'assumed',
+    garage: 'assumed',
+    terrain: 'assumed',
+    vegetation: 'assumed',
+    interior: 'assumed',
+  }
+
+  const score = (key: ConfidenceKey): number =>
+    key === 'property' ? round2(clamp01(property.confidence)) : round2(assumed(null).confidence)
 
   const byObject: Record<ConfidenceKey, number> = {
-    property: round2(clamp01(property.confidence)),
-    building: round2(clamp01(building.confidence)),
-    roof: round2(clamp01(roof.confidence)),
-    garage: round2(clamp01(garagePart ? garagePart.confidence : 0)),
-    terrain: round2(clamp01(terrain.confidence)),
-    vegetation: round2(clamp01(meanConfidence(vegItems, 0.6))),
-    interior: round2(interior),
+    property: score('property'),
+    building: score('building'),
+    roof: score('roof'),
+    garage: garagePart ? score('garage') : 0,
+    terrain: score('terrain'),
+    vegetation: score('vegetation'),
+    // The aerial cannot see inside at all, so the floor plan is the weakest
+    // claim the pipeline makes — and the one the user should check first.
+    interior: round2(assumed(null, 0.6).confidence),
   }
 
-  // Weighted overall — skip the garage term when there is no garage.
-  let sum = 0
-  let wsum = 0
-  for (const key of Object.keys(byObject) as ConfidenceKey[]) {
-    if (key === 'garage' && !garagePart) continue
-    const w = WEIGHTS[key]
-    sum += byObject[key] * w
-    wsum += w
-  }
+  const overall = aggregateConfidence(
+    (Object.keys(byObject) as ConfidenceKey[])
+      .filter((key) => !(key === 'garage' && !garagePart))
+      .map((key) => ({ attr: { confidence: byObject[key] }, weight: WEIGHTS[key] })),
+  )
 
-  return {
-    overall: round2(wsum > 0 ? sum / wsum : 0),
-    byObject,
-  }
+  return { overall, byObject, provenance }
 }
 
 /** Format a 0..1 confidence as a whole-percent string (e.g. "92 %"). */

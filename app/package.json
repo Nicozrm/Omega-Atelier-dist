@@ -9,7 +9,8 @@
     "prebuild": "node scripts/sync-media.mjs",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:parcel": "vite-node scripts/verify-parcel.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",

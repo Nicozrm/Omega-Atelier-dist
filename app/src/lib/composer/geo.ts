@@ -91,6 +91,111 @@ export function polygonCentroid(poly: LocalPolygon): LocalPoint {
   return { x: cx / (6 * a), y: cy / (6 * a) }
 }
 
+/** Axis-aligned bounds of a local polygon. */
+export interface LocalBBox {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+export function polygonBBox(poly: LocalPolygon): LocalBBox {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of poly) {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  if (!Number.isFinite(minX)) return { minX: 0, minY: 0, maxX: 0, maxY: 0 }
+  return { minX, minY, maxX, maxY }
+}
+
+/**
+ * Convex hull (Andrew's monotone chain), counter-clockwise, without the
+ * duplicated end point. Needed by {@link orientedBounds}: the minimum-area
+ * rectangle of a polygon is always flush with an edge of its hull, so the hull
+ * is what turns an O(n³) search into a walk over a handful of candidates.
+ */
+export function convexHull(poly: LocalPolygon): LocalPolygon {
+  const pts = [...poly].sort((a, b) => (a.x - b.x) || (a.y - b.y))
+  if (pts.length < 3) return pts
+  const cross = (o: LocalPoint, a: LocalPoint, b: LocalPoint) =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+
+  const lower: LocalPoint[] = []
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop()
+    lower.push(p)
+  }
+  const upper: LocalPoint[] = []
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i]
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop()
+    upper.push(p)
+  }
+  lower.pop()
+  upper.pop()
+  return lower.concat(upper)
+}
+
+/** Rotate a polygon about the origin by `rad` (positive = x toward y). */
+export function rotatePolygon(poly: LocalPolygon, rad: number): LocalPolygon {
+  const c = Math.cos(rad)
+  const s = Math.sin(rad)
+  return poly.map((p) => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c }))
+}
+
+/** Shift a polygon so its bounding box starts at the origin. */
+export function normalizePolygon(poly: LocalPolygon): LocalPolygon {
+  const b = polygonBBox(poly)
+  return poly.map((p) => ({ x: p.x - b.minX, y: p.y - b.minY }))
+}
+
+/** The minimum-area rectangle enclosing a polygon. */
+export interface OrientedBounds {
+  /** Rotation of the rectangle against the local axes, radians. */
+  angle: number
+  /** Extent along the rectangle's own axes, metres. */
+  widthM: number
+  depthM: number
+  areaSqm: number
+}
+
+/**
+ * Minimum-area oriented bounding box via rotating calipers over the hull edges.
+ *
+ * This is what makes a hand-drawn parcel usable: a plot is almost never aligned
+ * to north, so its axis-aligned bounding box over-states both dimensions — for
+ * a lot rotated 30° that is a ~40 % error on frontage. Every downstream module
+ * (building placement, driveway, garden) reasons in the plot's own frame, so
+ * the plot's *true* frontage and depth are exactly what they need.
+ */
+export function orientedBounds(poly: LocalPolygon): OrientedBounds {
+  const hull = convexHull(poly)
+  if (hull.length < 3) {
+    const b = polygonBBox(poly)
+    const w = b.maxX - b.minX
+    const d = b.maxY - b.minY
+    return { angle: 0, widthM: w, depthM: d, areaSqm: w * d }
+  }
+
+  let best: OrientedBounds | null = null
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i]
+    const b = hull[(i + 1) % hull.length]
+    const edge = Math.atan2(b.y - a.y, b.x - a.x)
+    // Rotate the hull so this edge lies on the x axis, then measure.
+    const rotated = rotatePolygon(hull, -edge)
+    const bb = polygonBBox(rotated)
+    const w = bb.maxX - bb.minX
+    const d = bb.maxY - bb.minY
+    const area = w * d
+    if (!best || area < best.areaSqm) best = { angle: edge, widthM: w, depthM: d, areaSqm: area }
+  }
+  return best!
+}
+
 /** Clamp a latitude/longitude pair into valid WGS84 ranges. */
 export function clampGeo(p: GeoPoint): GeoPoint {
   return {

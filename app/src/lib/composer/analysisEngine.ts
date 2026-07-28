@@ -16,6 +16,7 @@
 import type {
   AnalysisContext,
   AnalysisProgress,
+  ParcelInput,
   BuildingFeature,
   DetectedScene,
   DetectorModule,
@@ -29,6 +30,9 @@ import type {
   VegetationFeature,
 } from './types'
 import { SeededRng } from './rng'
+import {
+  geoToLocal, normalizePolygon, orientedBounds, polygonAreaSqm, polygonBBox, rotatePolygon,
+} from './geo'
 import { defaultMapProvider, type MapProvider } from './mapProvider'
 import { PropertyDetector } from './propertyDetector'
 import { BuildingRecognizer } from './buildingDetector'
@@ -93,8 +97,57 @@ export const ANALYSIS_CHECKLIST: ChecklistItem[] = [
 export interface AnalysisInput {
   view: MapView
   tap: GeoPoint
-  /** Optional user-drawn parcel override (reserved — geometry still derives from the tap). */
+  /**
+   * The parcel the user drew on the map. When present it **replaces** every
+   * derived parcel geometry — it is the most reliable input the pipeline has.
+   */
   polygon?: GeoPoint[]
+}
+
+/**
+ * Project a drawn parcel into the frame the detectors work in.
+ *
+ * Three steps, each of which matters:
+ *   1. **geo → metres**, anchored on the parcel's own north-west corner.
+ *   2. **rotate into the parcel's own axes** (minimum-area bounds). A plot is
+ *      almost never aligned to north, and every downstream module reasons in
+ *      "along the street / into the plot" terms — so the plot's true frontage
+ *      and depth are what they need, not the north-aligned bounding box, which
+ *      over-states both.
+ *   3. **normalise to the origin**, because the scene builder assumes the
+ *      parcel lives in [0, width] × [0, depth].
+ *
+ * Returns `undefined` for anything that is not a usable ring (fewer than three
+ * points, or a degenerate sliver), so the caller falls back cleanly.
+ */
+export function prepareParcel(polygon: GeoPoint[] | undefined): ParcelInput | undefined {
+  if (!polygon || polygon.length < 3) return undefined
+
+  // North-west corner: smallest longitude, largest latitude.
+  const origin: GeoPoint = {
+    lat: Math.max(...polygon.map((p) => p.lat)),
+    lng: Math.min(...polygon.map((p) => p.lng)),
+  }
+  const local = polygon.map((p) => geoToLocal(origin, p))
+  const areaSqm = polygonAreaSqm(local)
+  if (!Number.isFinite(areaSqm) || areaSqm < 4) return undefined
+
+  const ob = orientedBounds(local)
+  const aligned = normalizePolygon(rotatePolygon(local, -ob.angle))
+  const bb = polygonBBox(aligned)
+  const widthM = bb.maxX - bb.minX
+  const depthM = bb.maxY - bb.minY
+  if (widthM < 2 || depthM < 2) return undefined
+
+  return {
+    polygon: aligned,
+    areaSqm: Math.round(areaSqm),
+    widthM: Math.round(widthM * 10) / 10,
+    depthM: Math.round(depthM * 10) / 10,
+    // Local y runs south, so a positive rotation in that frame is a bearing
+    // measured clockwise from north once negated.
+    orientationDeg: Math.round(((-ob.angle * 180) / Math.PI) * 10) / 10,
+  }
 }
 
 export interface AnalyzeOptions {
@@ -162,7 +215,8 @@ export async function runAnalysis(input: AnalysisInput, opts: AnalyzeOptions = {
   // 1. Satellite capture
   const image = provider.capture(input.tap, input.view)
   const rng = new SeededRng(image.seed)
-  const ctx: AnalysisContext = { rng, image }
+  const parcel = prepareParcel(input.polygon)
+  const ctx: AnalysisContext = { rng, image, ...(parcel ? { parcel } : {}) }
   emit('satellite', undefined, provider.label)
   await sleep(delay, signal)
   throwIfAborted(signal)

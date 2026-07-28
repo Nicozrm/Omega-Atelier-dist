@@ -7,7 +7,10 @@ import {
 import { useComposerStore, type ComposerStep } from '@/store/useComposerStore'
 import { usePlanStore } from '@/store/usePlanStore'
 import { useModalA11y } from '@/ui/useModalA11y'
-import { formatConfidence, type ConfidenceKey, type RoofShape } from '@/lib/composer'
+import {
+  formatConfidence, PROVENANCE_SHORT,
+  type ConfidenceKey, type Provenance, type RoofShape,
+} from '@/lib/composer'
 import { MapComposer } from './MapComposer'
 import { AnalysisStage } from './AnalysisStage'
 
@@ -150,10 +153,23 @@ function confTone(v: number): string {
   return 'var(--color-omega-warn)'
 }
 
-function ConfBar({ label, value }: { label: string; value: number }) {
+/**
+ * One confidence row. The percentage alone was the misleading part of the old
+ * summary — a number without a source reads as a measurement error bar. The
+ * provenance label next to it says plainly whether the value was drawn by the
+ * user, read from a source, or assumed by the generator.
+ */
+function ConfBar({ label, value, provenance }: { label: string; value: number; provenance?: Provenance }) {
   return (
     <div className="flex items-center gap-2 text-sm">
-      <span className="w-24 shrink-0 text-[color:var(--muted)]">{label}</span>
+      <span className="w-24 shrink-0 text-[color:var(--muted)]">
+        {label}
+        {provenance && (
+          <span className="block text-[10px] leading-tight text-[color:var(--muted)] opacity-70">
+            {PROVENANCE_SHORT[provenance]}
+          </span>
+        )}
+      </span>
       <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-[color:var(--surface-3)]">
         <div
           className="absolute inset-y-0 left-0 rounded-full"
@@ -230,7 +246,7 @@ function DoneStep() {
           <Mountain size={12} /> Konfidenz pro Objekt
         </div>
         {rows.map((r) => (
-          <ConfBar key={r.key} label={r.label} value={confidence.byObject[r.key]} />
+          <ConfBar key={r.key} label={r.label} value={confidence.byObject[r.key]} provenance={confidence.provenance[r.key]} />
         ))}
         <p className="pt-1 text-[11px] text-[color:var(--muted)]">
           Unsichere Bereiche (z. B. Innenwände) sind bewusst niedrig bewertet — der Grundriss ist eine plausible

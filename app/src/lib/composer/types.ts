@@ -1,3 +1,5 @@
+import type { Provenance } from './provenance'
+
 /**
  * types.ts — the Composer's shared vocabulary.
  *
@@ -87,6 +89,29 @@ export interface SatelliteImage {
 export interface AnalysisContext {
   rng: Rng
   image: SatelliteImage
+  /**
+   * The parcel the user drew, already projected into the local metric frame,
+   * rotated into its own axes and normalised to start at the origin.
+   *
+   * Present only when the user actually drew one. This is the single most
+   * reliable input the pipeline ever gets — it is the one thing the person in
+   * front of the screen knows better than any data source — so detectors must
+   * prefer it over anything they could derive themselves.
+   */
+  parcel?: ParcelInput
+}
+
+/** The user-drawn parcel, prepared for the detectors. */
+export interface ParcelInput {
+  /** Outline in local metres, bounding box anchored at (0, 0). */
+  polygon: LocalPolygon
+  /** True area by the shoelace formula — not the bounding box's. */
+  areaSqm: number
+  /** Extent along the parcel's own axes. */
+  widthM: number
+  depthM: number
+  /** Rotation of those axes against north, degrees. */
+  orientationDeg: number
 }
 
 /** A swappable pipeline step. */
@@ -133,6 +158,15 @@ export interface PropertyFeature {
   /** Which edge the street runs along. */
   streetSide: 'south' | 'north' | 'east' | 'west'
   confidence: number
+  /**
+   * Where the geometry came from. `user` once the parcel was drawn, `assumed`
+   * while the synthetic fallback is in play. The street side stays `assumed`
+   * either way until a road source (OSM) can answer it.
+   */
+  provenance: {
+    geometry: Provenance
+    streetSide: Provenance
+  }
 }
 
 /** One volume of the building — the house itself or an attachment. */
@@ -231,9 +265,11 @@ export type ConfidenceKey =
   | 'interior'
 
 export interface ConfidenceReport {
-  /** Weighted overall score, 0…1. */
+  /** Weighted overall score, 0…1. Derived from provenance, never estimated. */
   overall: number
   byObject: Record<ConfidenceKey, number>
+  /** Why each score is what it is — what the UI shows next to the bar. */
+  provenance: Record<ConfidenceKey, Provenance>
 }
 
 /* ────────────────────────────── Result ──────────────────────────────── */
