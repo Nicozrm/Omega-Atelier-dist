@@ -5714,7 +5714,18 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
   const ortho = useOrthophotoGround({
     geo: doc?.geo,
     groundSizeM: world.extentM * 2.4,
-    pixels: ULTRA ? 4096 : 2048,
+    // Pixelzahl aus der Bodenkante ableiten statt fest vorzugeben.
+    //
+    // Vorher standen hier feste 2048 bzw. 4096. Beides ist falsch herum
+    // gedacht: bei kleiner Szene sind 4096 px reine Verschwendung, bei großer
+    // reichen 2048 nicht. Vor allem aber ist 4096 eine schwere Anfrage — der
+    // Dienst muss ein 16-Megapixel-Bild rendern —, und sie kann schlicht
+    // scheitern. Die Szene sieht danach nach erzeugtem Rasen aus, was ein
+    // völlig plausibler Anblick ist; der Fehlschlag fällt also nicht auf.
+    //
+    // Die Befliegung hat 10 cm Auflösung. Mehr als ein Pixel je 12 cm zu
+    // bestellen bringt keine Information, nur Bytes und Risiko.
+    pixels: Math.round((world.extentM * 2.4) / (ULTRA ? 0.10 : 0.16)),
   })
 
   return (

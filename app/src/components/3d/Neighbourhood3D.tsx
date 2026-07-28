@@ -36,6 +36,17 @@ import {
   type StreetFurniture, type StreetSegment, type TreeKind, type Vec2,
 } from '@/lib/world'
 
+/**
+ * Wie weit das Vorfeld über die Szene hinausreicht.
+ *
+ * Es hat nur eine Aufgabe: den Horizont schließen, damit man bei flachem
+ * Blickwinkel nicht über die Kante der Bodenebene ins Nichts sieht. Vier
+ * reichen dafür — acht waren der erste Entwurf und haben die Grastextur auf
+ * über zweitausend Kachelungen getrieben, was als graues Moiré endet statt als
+ * Rasen.
+ */
+const APRON_FACTOR = 4
+
 /** Ground sits a hair below the plan's floor slab, as the old estate did. */
 const GROUND_Y = -0.13
 
@@ -183,7 +194,12 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
   // Das Vorfeld ist die achtfache Kantenlänge (siehe Grundfläche), also
   // muss die Kachelung mitwachsen — sonst wird ein Grasbüschel hundert
   // Meter breit und die Fläche liest sich als grüner Nebel.
-  m.lawn.map = clone(grassTexture(), span * 8 / 2.2, span * 8 / 2.2)
+  // Die Kachelung muss mit dem Vorfeld wachsen, aber gedeckelt: jenseits von
+  // rund 200 Wiederholungen liegt ein Grasbüschel unter einem Bildschirmpixel,
+  // und aus der Textur wird Rauschen. Der Deckel kostet nur, dass ein sehr
+  // fernes Grasbüschel groß wirkt — das sieht ohnehin niemand.
+  const lawnRepeat = Math.min(200, (span * APRON_FACTOR) / 2.2)
+  m.lawn.map = clone(grassTexture(), lawnRepeat, lawnRepeat)
   m.lawn.side = THREE.DoubleSide
   m.lawnPlot.map = clone(grassTexture(), 6, 6)
   m.road.map = clone(asphaltTexture(), span / 3, 1.4)
@@ -1223,10 +1239,15 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
           key="ground-apron"
           position={[world.network.centre.x, GROUND_Y - 0.05, world.network.centre.z]}
           rotation={[-Math.PI / 2, 0, 0]}
-          receiveShadow
+          // **Kein** `receiveShadow`. Das Vorfeld ist ein Vielfaches der Szene
+          // groß und liegt damit fast vollständig außerhalb des
+          // Schatten-Frustums (siehe `shadowExtentM` in ThreeDView). Dort
+          // liefert die Schattenkarte keine sinnvollen Werte mehr, und das
+          // Ergebnis ist Schattenakne: helle und dunkle Streifen quer über die
+          // ganze Fläche. Genau so sah es aus, bis diese Zeile fehlte.
           material={mats.m.lawn}
         >
-          <planeGeometry args={[size * 8, size * 8]} />
+          <planeGeometry args={[size * APRON_FACTOR, size * APRON_FACTOR]} />
         </mesh>,
       )
       nodes.push(
@@ -1254,7 +1275,7 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     } else {
       nodes.push(
         <mesh key="ground" position={[world.network.centre.x, GROUND_Y - 0.002, world.network.centre.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={mats.m.lawn}>
-          <planeGeometry args={[size * 8, size * 8]} />
+          <planeGeometry args={[size * APRON_FACTOR, size * APRON_FACTOR]} />
         </mesh>,
       )
     }

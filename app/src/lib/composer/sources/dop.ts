@@ -208,12 +208,42 @@ export async function resolveOrthophoto(
   req: OrthophotoRequest,
   signal?: AbortSignal,
 ): Promise<{ photo: Orthophoto; image: HTMLImageElement } | undefined> {
-  for (const photo of orthophotoCandidates(req)) {
+  const candidates = orthophotoCandidates(req)
+  if (candidates.length === 0) {
+    note(req, 'kein Dienst deckt diesen Ort ab')
+    return undefined
+  }
+  for (const photo of candidates) {
     const probe = await loadImage(coverageProbeUrl(photo, req.at), signal)
     if (signal?.aborted) return undefined
-    if (!probe || !probeHasPixels(probe)) continue
+    if (!probe) { note(req, `${photo.source.id}: Deckungsabzug nicht ladbar (CORS oder Dienst)`) ; continue }
+    if (!probeHasPixels(probe)) { note(req, `${photo.source.id}: hier keine Befliegung`) ; continue }
     const image = await loadOrthophoto(photo, signal)
     if (image) return { photo, image }
+    note(req, `${photo.source.id}: Bild nicht ladbar (${photo.pixels} px, evtl. zu groß für den Dienst)`)
   }
   return undefined
+}
+
+/**
+ * Warum kein Luftbild zustande kam.
+ *
+ * Ein stiller Fehlschlag ist hier besonders teuer: die Szene sieht danach
+ * einfach nach erzeugtem Rasen aus, und das ist ein völlig plausibler Anblick.
+ * Ohne diese Meldung lässt sich von außen nicht unterscheiden, ob der Ort
+ * keine Befliegung hat, der Dienst streikt oder die Anfrage zu groß war.
+ */
+function note(req: OrthophotoRequest, reason: string): void {
+  const w = globalThis as unknown as Record<string, unknown>
+  w.__OMEGA_GROUND__ = {
+    ergebnis: 'kein Luftbild',
+    grund: reason,
+    ort: `${req.at.lat.toFixed(5)}, ${req.at.lng.toFixed(5)}`,
+    bodenkanteM: req.groundSizeM,
+    pixel: req.pixels,
+  }
+  if (typeof console !== 'undefined') {
+    console.info('%cOMEGA Boden%c kein Luftbild — ' + reason,
+      'font-weight:600;color:#C7A24E', 'color:inherit')
+  }
 }
