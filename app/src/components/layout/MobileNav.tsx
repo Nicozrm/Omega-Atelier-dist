@@ -15,7 +15,7 @@ export function MobileNav() {
   const openMobilePanel = useUIStore((s) => s.openMobilePanel)
 
   return (
-    <nav className="lg:hidden fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-[color:var(--border)] bg-[color:var(--bg)]/95 backdrop-blur safe-bottom">
+    <nav className="lg:hidden fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-[color:var(--border)] glass-strong safe-bottom">
       {NAV.map((n) => {
         const active = mobilePanel === n.key
         const Icon = n.icon

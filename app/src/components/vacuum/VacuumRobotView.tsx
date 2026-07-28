@@ -376,7 +376,7 @@ export function VacuumRobotView({ onClose }: { onClose: () => void }) {
 
         {/* Room chips (Raum/Zone mode) */}
         {(mode === 'raum' || mode === 'zone') && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 max-w-[92%] overflow-x-auto px-1.5 py-1 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 max-w-[92%] overflow-x-auto px-1.5 py-1 rounded-xl border border-[color:var(--border)] glass shadow-lg">
             {rooms.map((r) => (
               <button key={r.id} onClick={() => setSelectedRoom(r.id)}
                 className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] transition-colors ${selectedRoom === r.id ? 'bg-[color:var(--accent)] text-white' : 'text-[color:var(--muted)] hover:text-[color:var(--fg)] hover:bg-[color:var(--surface-2)]'}`}>

@@ -30,7 +30,7 @@ export function SnapBar() {
     : null
 
   return (
-    <div className="absolute bottom-[4.4rem] left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-1.5 py-1 rounded-full border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg">
+    <div className="absolute bottom-[4.4rem] left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-1.5 py-1 rounded-full border border-[color:var(--border)] glass shadow-lg">
       <span className="pl-1.5 text-[10px] font-medium uppercase tracking-wider text-[color:var(--muted)]">Snap</span>
       <button className={seg(!s.snap)} onClick={() => patch((st) => { st.snap = false })}>Aus</button>
       {SNAP_STEPS.map(({ label, cm }) => (

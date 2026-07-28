@@ -55,7 +55,7 @@ import { resolveFloorMaterial, resolveSurfaceMaterialId, resolveCeilingMaterial,
 import { deriveLightSources } from '@/lib/lighting'
 import { deriveEnvironment, type EnvironmentState, type DayPhase } from '@/lib/environment'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { OrbitControls, ContactShadows, PointerLockControls, PerformanceMonitor, RoundedBox, MeshReflectorMaterial } from '@react-three/drei'
+import { OrbitControls, ContactShadows, PointerLockControls, PerformanceMonitor, RoundedBox, MeshReflectorMaterial, SoftShadows } from '@react-three/drei'
 import { usePlanStore } from '@/store/usePlanStore'
 import { LiveTwinReflection } from './LiveTwinReflection'
 import { VirtualResidents, type ResidentStatus } from './VirtualResidents'
@@ -5667,6 +5667,32 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
       {/* Trim the flat uniform fill hard so the directional key, cove strips and
           corner AO shape the walls — the reference's moody falloff instead of a
           washed-out even glow (near-white walls otherwise blow out at eye level). */}
+      {/*
+        Weiche Schatten, die sich wie echte verhalten.
+        ─────────────────────────────────────────────
+        PCF — auch das „soft" am Canvas — filtert mit einem festen Kernel: die
+        Kante ist überall gleich weich, egal ob ein Stuhlbein einen Zentimeter
+        über dem Boden steht oder ein Dach drei Meter darüber. Genau daran
+        erkennt das Auge sofort, dass es gerendert ist.
+
+        PCSS sucht zuerst den Abstand zum Verdecker und wählt die Kernelbreite
+        danach. Ergebnis: der Schatten ist am Fußpunkt scharf und wird nach
+        außen weich — „contact hardening". Das ist der eigentliche Sprung bei
+        „feinere Schatten", und er kostet nichts an Geometrie, nur Shader-Zeit.
+
+        Deshalb nur in der hohen Stufe: PCSS tastet die Schattenkarte mehrfach
+        ab, und auf einem Telefon frisst das die Bildrate, die für alles andere
+        gebraucht wird. `size` ist in Weltmetern zu lesen — die scheinbare
+        Größe der Sonne als Lichtquelle.
+
+        Nebenbei entsorgt: am Sonnenlicht stand `shadow-radius={5}` und hat
+        nichts getan. three.js wertet `LightShadow.radius` nur in den
+        Shader-Zweigen PCF und VSM aus; im PCF_SOFT-Zweig — den `shadows="soft"`
+        am Canvas setzt — kommt die Uniform gar nicht vor, dort steht ein fester
+        5×5-Kernel aus `texelSize`. Der Regler war seit jeher tot, und die
+        Kantenschärfe hing allein an der Größe der Schattenkarte.
+      */}
+      {readTier() === 'high' && <SoftShadows size={12} samples={16} focus={0.6} />}
       <ambientLight color={new THREE.Color(env.lighting.ambient.color).lerp(new THREE.Color('#ffecd0'), 0.18)} intensity={env.lighting.ambient.intensity * 0.56} />
       {env.sun.aboveHorizon && (
         <directionalLight
@@ -5684,7 +5710,6 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           shadow-camera-bottom={-(Math.max(wM, hM) + 4)}
           shadow-bias={-0.0005}
           shadow-normalBias={0.02}
-          shadow-radius={5}
         />
       )}
       {/* Functional room lighting — real point lights from the lighting model. */}
@@ -6127,7 +6152,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5 max-w-[calc(100%-1rem)]">
           <div className="flex items-center gap-2 flex-wrap justify-center">
             {/* View segmented control */}
-            <div className="flex items-center gap-0.5 p-0.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg">
+            <div className="flex items-center gap-0.5 p-0.5 rounded-xl border border-[color:var(--border)] glass shadow-lg">
               <button
                 onClick={() => useUIStore.getState().setViewMode('2d')}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium text-[color:var(--muted)] hover:text-[color:var(--fg)] transition-colors"
@@ -6143,7 +6168,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             </div>
             {/* Time-of-day pill */}
             <div
-              className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg"
+              className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl border border-[color:var(--border)] glass shadow-lg"
               title="Tageszeit – bewegt Sonne, Licht, Himmel und Schatten"
             >
               {env.sun.aboveHorizon ? <Sun size={14} className="text-[color:var(--accent)]" /> : <Moon size={14} className="text-[color:var(--muted)]" />}
@@ -6260,7 +6285,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
           </div>
           {/* Room fly-to chips — select a room and the camera glides inside */}
           {!walkMode && roomChips.length > 0 && (
-            <div className="flex items-center gap-0.5 max-w-[94vw] overflow-x-auto px-1 py-0.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg">
+            <div className="flex items-center gap-0.5 max-w-[94vw] overflow-x-auto px-1 py-0.5 rounded-xl border border-[color:var(--border)] glass shadow-lg">
               {roomChips.map((r) => (
                 <button
                   key={r.id}
@@ -6346,7 +6371,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
         )}
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
           {/* Floor selector */}
-          <div className="hidden md:flex items-center gap-1 px-2 py-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]">
+          <div className="hidden md:flex items-center gap-1 px-2 py-1 rounded-md border border-[color:var(--border)] glass">
             <span className="text-[9px] uppercase tracking-wider text-[color:var(--muted)] mr-1">Boden</span>
             {floorOptions.map((opt) => (
               <button
@@ -6359,7 +6384,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             ))}
           </div>
           {/* Wall selector */}
-          <div className="hidden md:flex items-center gap-1 px-2 py-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]">
+          <div className="hidden md:flex items-center gap-1 px-2 py-1 rounded-md border border-[color:var(--border)] glass">
             <span className="text-[9px] uppercase tracking-wider text-[color:var(--muted)] mr-1">Wand</span>
             {wallOptions.map((opt) => (
               <button
@@ -6380,7 +6405,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             <span className="hidden md:inline">{walkMode ? 'Walk an' : 'Walk'}</span>
           </button>
           <div
-            className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]"
+            className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md border border-[color:var(--border)] glass"
             title="Tageszeit – bewegt Sonne, Licht, Himmel und Schatten"
           >
             {env.sun.aboveHorizon ? <Sun size={14} className="text-[color:var(--accent)]" /> : <Moon size={14} className="text-[color:var(--muted)]" />}
@@ -6617,7 +6642,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             (Twinmotion/Forma feel). Presets fly the camera smoothly; capture
             grabs the composed frame; fullscreen expands the viewport. */}
         {!preview && (
-        <div className="absolute right-2 sm:right-4 top-20 z-10 flex flex-col items-center gap-1 p-1 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg">
+        <div className="absolute right-2 sm:right-4 top-20 z-10 flex flex-col items-center gap-1 p-1 rounded-xl border border-[color:var(--border)] glass shadow-lg">
           {!walkMode && ([
             ['persp', Box], ['corner', Boxes], ['top', LayoutGrid], ['front', Square],
           ] as Array<[CamPreset, typeof Box]>).map(([preset, Icon]) => (
@@ -6728,7 +6753,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             The needle div is rotated imperatively by CompassTracker. */}
         {!preview && (
         <div className="absolute right-4 top-1/2 -translate-y-1/2 z-10 hidden sm:flex flex-col items-center gap-2">
-          <div className="relative flex h-11 w-11 items-center justify-center rounded-full border border-[color:var(--border)] bg-[color:var(--surface)]/85 backdrop-blur-md shadow-lg">
+          <div className="relative flex h-11 w-11 items-center justify-center rounded-full border border-[color:var(--border)] glass shadow-lg">
             <div ref={compassNeedleRef} className="flex flex-col items-center will-change-transform">
               <span className="text-[9px] font-semibold leading-none text-[color:var(--accent)]">N</span>
               <svg viewBox="0 0 8 14" className="mt-0.5 h-3.5 w-2">
