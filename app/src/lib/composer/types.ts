@@ -141,6 +141,12 @@ export interface AlkisObservations {
   buildings: CadastreBuilding[]
   /** Das Hauptgebäude auf dem eigenen Flurstück. */
   ownBuilding?: CadastreBuilding
+  /**
+   * Die übrigen Baukörper auf demselben Flurstück — Garagen, Carports,
+   * Schuppen, Überdachungen. Vermessen, und deshalb den erfundenen
+   * Nebengebäuden des Generators vorzuziehen.
+   */
+  ownAncillary: CadastreBuilding[]
   landUse: LandUseArea[]
   source: SourceRef
 }
@@ -185,6 +191,16 @@ export interface AnalysisProgress {
   /** The phase's own confidence, where it produces one. */
   confidence?: number
   detail?: string
+  /**
+   * Feiner Fortschritt zwischen zwei Phasen, 0…1 der Gesamtstrecke.
+   *
+   * Ohne diesen Wert springt die Anzeige in Sechsteln, und die Wartezeit auf
+   * die externen Quellen fällt komplett zwischen zwei Sprünge: der Ring stand
+   * bei 17 %, während im Hintergrund noch abgerufen wurde. Ein stehender
+   * Balken ist für den Benutzer ein Absturz, auch wenn er es technisch nicht
+   * ist — genau so wurde der Fehler zweimal gemeldet.
+   */
+  fraction?: number
 }
 
 export type AnalysisStatus = 'idle' | 'running' | 'done' | 'canceled' | 'error'

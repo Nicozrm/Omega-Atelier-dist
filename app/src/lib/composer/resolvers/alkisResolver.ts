@@ -187,14 +187,37 @@ export function extractCadastreBuildings(site: AlkisSite): CadastreBuilding[] {
 }
 
 /**
- * Das Hauptgebäude auf einem Flurstück: das größte, das kein Nebengebäude ist.
- * Das Kataster unterscheidet Wohnhaus und Garage ausdrücklich — eine Semantik,
- * die OSM in dieser Verlässlichkeit nicht hat.
+ * **Alle** Baukörper auf einem Flurstück, getrennt in Haupt- und Nebengebäude.
+ *
+ * Das „alle" ist der Punkt. Ein Grundstück ist selten ein Haus: an der
+ * Kolpingstraße 9 in Borghorst kennt das Kataster sechs Baukörper — 174, 116,
+ * 76, 44, 20 und 14 m². Wer nur den größten nimmt, setzt ein Haus auf eine
+ * ansonsten leere Fläche und lässt Garagenzeile und Schuppen weg, obwohl beide
+ * vermessen vorliegen. Der Generator hat sie anschließend frei erfunden und
+ * woanders hingestellt — schlechter als nichts, weil es wie eine Messung aussah.
  */
-export function mainBuildingOnParcel(
+export interface ParcelStructures {
+  /** Das Hauptgebäude. */
+  main?: CadastreBuilding
+  /** Alles Weitere auf demselben Flurstück, absteigend nach Fläche. */
+  ancillary: CadastreBuilding[]
+}
+
+/**
+ * Ab welcher Fläche ein Baukörper ohne Klartext als Hauptgebäude in Frage
+ * kommt.
+ *
+ * Nötig, weil `gebnutzbez` in weiten Teilen des Bestands schlicht „Gebäude"
+ * lautet — an der Kolpingstraße trägt **kein einziger** der sechs Baukörper
+ * eine Nutzungsangabe. Die Regexe über dem Klartext greifen dort also nie, und
+ * ohne diesen Rückfall entschiede allein die Reihenfolge der Antwort.
+ */
+export const MAIN_MIN_SQM = 45
+
+export function structuresOnParcel(
   buildings: CadastreBuilding[],
   parcel: CadastralParcel,
-): CadastreBuilding | undefined {
+): ParcelStructures {
   const origin = parcel.ring[0]
   const poly = parcel.ring.map((p) => geoToLocal(origin, p))
   const on = buildings.filter((b) => {
@@ -204,10 +227,26 @@ export function mainBuildingOnParcel(
     )
     return pointInPolygon(geoToLocal(origin, c), poly)
   })
-  const primary = on.filter((b) => !b.ancillary)
-  const pool = primary.length > 0 ? primary : on
-  if (pool.length === 0) return undefined
-  return pool.reduce((best, b) => (b.areaSqm > best.areaSqm ? b : best))
+  if (on.length === 0) return { ancillary: [] }
+
+  const byArea = [...on].sort((a, b) => b.areaSqm - a.areaSqm)
+  // Klartext schlägt Fläche; wo er fehlt, entscheidet die Größe.
+  const named = byArea.find((b) => b.residential)
+  const unmarked = byArea.find((b) => !b.ancillary && b.areaSqm >= MAIN_MIN_SQM)
+  const main = named ?? unmarked ?? byArea[0]
+  return { main, ancillary: byArea.filter((b) => b !== main) }
+}
+
+/**
+ * Das Hauptgebäude auf einem Flurstück. Das Kataster unterscheidet Wohnhaus und
+ * Garage ausdrücklich — eine Semantik, die OSM in dieser Verlässlichkeit nicht
+ * hat, wo sie denn gepflegt ist.
+ */
+export function mainBuildingOnParcel(
+  buildings: CadastreBuilding[],
+  parcel: CadastralParcel,
+): CadastreBuilding | undefined {
+  return structuresOnParcel(buildings, parcel).main
 }
 
 /* ────────────────────────────── Nutzung ─────────────────────────────── */

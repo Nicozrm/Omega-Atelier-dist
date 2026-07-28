@@ -56,16 +56,31 @@ export async function withinBudget<T>(
 ): Promise<T> {
   const deadline = withDeadline(callerSignal, ms)
   let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
   try {
     return await Promise.race([
       work(deadline),
       new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms) }),
+      // Dritter Teilnehmer: der Abbruch des Aufrufers.
+      //
+      // Das Signal an `work` durchzureichen genügt **nicht**. Ein Transport,
+      // der es ignoriert — oder eine Anfrage, die in der Namensauflösung
+      // feststeckt —, ließe den Aufrufer sonst bis zum Ablauf der Frist warten,
+      // obwohl er längst auf „Abbrechen" gedrückt hat. Gemessen waren das
+      // 7,0 s statt 0,3 s; der Knopf war praktisch wirkungslos.
+      new Promise<never>((_, reject) => {
+        if (!callerSignal) return
+        if (callerSignal.aborted) return reject(callerSignal.reason)
+        onAbort = () => reject(callerSignal.reason)
+        callerSignal.addEventListener('abort', onAbort, { once: true })
+      }),
     ])
   } catch (err) {
     if (isCallerAbort(callerSignal)) throw err
     return fallback
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (onAbort && callerSignal) callerSignal.removeEventListener('abort', onAbort)
   }
 }
 
@@ -82,10 +97,21 @@ export const SOURCE_BUDGET_MS = {
   /** Kataster: kleine GeoJSON-Antworten, antwortet normalerweise unter 1 s. */
   alkis: 7_000,
   /**
-   * Overpass auf dem kritischen Pfad der Analyse. Gemessen braucht die enge
-   * Abfrage ~2 s; 8 s lassen Luft, ohne den Wizard hängen zu lassen.
+   * Overpass auf dem kritischen Pfad der Analyse.
+   *
+   * Hier stand einmal 12 s, und das war die zweite Fassung desselben Fehlers.
+   * Die erste ließ den Wizard unendlich hängen; die zweite ließ ihn exakt 12 s
+   * bei 17 % stehen — weil die Analyse auf **beide** Quellen wartet und
+   * Overpass regelmäßig in seine Frist läuft. Für den Benutzer ist das
+   * dasselbe Bild, und er hat es zu Recht wieder gemeldet.
+   *
+   * Gemessen antwortet die enge Abfrage in ~2,1 s. 4 s decken den gesunden
+   * Fall mit Reserve ab, und im kranken kostet Overpass jetzt 4 s statt 12 s.
+   * Mehr ist auf dem kritischen Pfad nicht zu rechtfertigen: OSM *bereichert*
+   * hier nur (Geschosszahl, Straßenname). Die Messung selbst kommt aus dem
+   * Kataster, und das antwortet unter einer Sekunde.
    */
-  overpass: 12_000,
+  overpass: 4_000,
   /**
    * Overpass für die 3D-Nachbarschaft. Läuft im Hintergrund mit sichtbarem
    * Rückfall, darf deshalb warten — die große Abfrage braucht gemessen ~8,5 s.

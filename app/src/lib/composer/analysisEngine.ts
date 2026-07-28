@@ -37,9 +37,10 @@ import { plainFrame, type LocalFrame } from './frame'
 import { polygonCentroid } from './geo'
 import { osmSource, type OsmSource } from './sources/overpass'
 import { alkisSource, type AlkisSource } from './sources/alkis'
+import { SOURCE_BUDGET_MS } from './sources/deadline'
 import {
   alkisSourceRef, extractCadastreBuildings, extractLandUse, extractParcels,
-  mainBuildingOnParcel, matchDrawnParcel, parcelAtPoint, parcelToInput,
+  matchDrawnParcel, parcelAtPoint, parcelToInput, structuresOnParcel,
 } from './resolvers/alkisResolver'
 import {
   extractBuildings, extractPois, extractRoads, pickOwnBuilding, summariseNeighbourhood,
@@ -262,10 +263,52 @@ export async function runAnalysis(input: AnalysisInput, opts: AnalyzeOptions = {
   // Pipeline arbeitet mit Annahmen weiter.
   const alkisSrc = opts.alkis === undefined ? alkisSource : opts.alkis
   const osmSrc = opts.osm === undefined ? osmSource : opts.osm
-  const [alkisSite, osmResult] = await Promise.all([
-    alkisSrc ? alkisSrc.fetchSite(image.center, 90, signal) : Promise.resolve(undefined),
-    osmSrc ? osmSrc.fetchSite(image.center, signal) : Promise.resolve(undefined),
-  ])
+
+  // Der Abruf dauert je nach Laune der Dienste bis zu einer Frist lang. Solange
+  // muss die Anzeige laufen: ein Ring, der sekundenlang auf derselben Zahl
+  // steht, ist für den Benutzer ein Absturz. Der Anteil ist dabei nicht
+  // geschätzt, sondern schlicht die verstrichene Zeit im Verhältnis zur
+  // längsten Frist — er läuft also genau so schnell wie die Geduld zu Ende geht.
+  const sourceBudget = Math.max(
+    alkisSrc ? SOURCE_BUDGET_MS.alkis : 0,
+    osmSrc ? SOURCE_BUDGET_MS.overpass : 0,
+  )
+  const startedAt = Date.now()
+  const landed: string[] = []
+  const tick = () => {
+    if (sourceBudget <= 0) return
+    const share = Math.min(1, (Date.now() - startedAt) / sourceBudget)
+    onProgress?.({
+      phase: 'satellite', index, total, label: PHASE_LABEL.satellite,
+      // Zwischen Phase 1 und 2 — nie darüber hinaus, sonst überholt die
+      // Wartezeit ein Ergebnis, das noch gar nicht vorliegt.
+      fraction: (index + share) / total,
+      detail: landed.length > 0 ? `${landed.join(' · ')} geladen` : 'Quellen werden abgefragt',
+    })
+  }
+  const ticker = sourceBudget > 0 ? setInterval(tick, 120) : undefined
+  const note = (name: string) => { landed.push(name); tick() }
+
+  let alkisSite: Awaited<ReturnType<AlkisSource['fetchSite']>>
+  let osmResult: Awaited<ReturnType<OsmSource['fetchSite']>>
+  try {
+    ;[alkisSite, osmResult] = await Promise.all([
+      alkisSrc
+        ? alkisSrc.fetchSite(image.center, 90, signal).then((r) => (note('Kataster'), r))
+        : Promise.resolve(undefined),
+      osmSrc
+        ? osmSrc.fetchSite(image.center, signal).then((r) => (note('Umgebung'), r))
+        : Promise.resolve(undefined),
+    ])
+  } catch (err) {
+    // Ein Abbruch aus der Quellen-Schicht kommt als DOMException herein; der
+    // Wizard kennt aber nur `AnalysisCanceledError`. Die Umwandlung gehört
+    // hierher, damit die Quellen nichts über den Wizard wissen müssen.
+    throwIfAborted(signal)
+    throw err
+  } finally {
+    if (ticker !== undefined) clearInterval(ticker)
+  }
   throwIfAborted(signal)
 
   let alkisObs: AnalysisContext['alkis']
@@ -275,9 +318,14 @@ export async function runAnalysis(input: AnalysisInput, opts: AnalyzeOptions = {
     // Die Zeichnung sagt, welches Grundstück gemeint ist; das Kataster sagt,
     // wo dessen Grenzen genau verlaufen. Ohne Zeichnung entscheidet der Tipp.
     const own = matchDrawnParcel(input.polygon, parcels) ?? parcelAtPoint(image.center, parcels)
+    // Haupt- und Nebengebäude kommen aus einem Durchlauf: die Zuordnung „was
+    // steht auf diesem Flurstück" wird nur einmal berechnet, und beide Antworten
+    // stammen garantiert aus derselben Auswahl.
+    const structures = own ? structuresOnParcel(buildings, own) : { ancillary: [] }
     alkisObs = {
       parcels, buildings, own,
-      ownBuilding: own ? mainBuildingOnParcel(buildings, own) : undefined,
+      ownBuilding: structures.main,
+      ownAncillary: structures.ancillary,
       landUse: extractLandUse(alkisSite),
       source: alkisSourceRef(alkisSite),
     }

@@ -42,7 +42,13 @@ export function AnalysisStage() {
   const retry = useComposerStore((s) => s.retryAnalysis)
   const setStep = useComposerStore((s) => s.setStep)
 
-  const pct = status === 'done' ? 1 : progress ? progress.index / progress.total : 0
+  // `fraction` gewinnt, wo es kommt: es füllt die Wartezeit auf die externen
+  // Quellen, die sonst komplett zwischen zwei Phasensprünge fällt.
+  const pct = status === 'done'
+    ? 1
+    : progress
+      ? (progress.fraction ?? progress.index / progress.total)
+      : 0
 
   const completedSet = useMemo(() => new Set<PhaseId>(completed), [completed])
   const itemState = (phases: PhaseId[]): 'done' | 'active' | 'pending' => {
@@ -83,6 +89,11 @@ export function AnalysisStage() {
           </div>
           {progress && !failed && (
             <div className="mt-1 text-sm text-[color:var(--accent-bright)] animate-fade-in">{progress.label}</div>
+          )}
+          {/* Woran gerade gearbeitet wird. Während des Quellenabrufs ist das die
+              einzige Rückmeldung — ohne sie wirkt der Wizard stehengeblieben. */}
+          {progress?.detail && !failed && (
+            <div className="mt-0.5 text-xs text-[color:var(--muted)]">{progress.detail}</div>
           )}
         </div>
       </div>
@@ -129,7 +140,11 @@ export function AnalysisStage() {
       {/* Controls */}
       {status === 'running' && (
         <div className="flex items-center justify-between">
-          <p className="text-xs text-[color:var(--muted)]">Offline-Analyse · läuft asynchron · jederzeit abbrechbar</p>
+          {/* Stand hier einmal als „Offline-Analyse". Das war seit der Anbindung
+              von Kataster und OSM schlicht falsch — und ausgerechnet beim
+              Suchen des 17-%-Fehlers die Angabe, die am meisten in die Irre
+              geführt hat. */}
+          <p className="text-xs text-[color:var(--muted)]">Amtliche Quellen · läuft asynchron · jederzeit abbrechbar</p>
           <button onClick={cancel} className="btn btn-ghost btn-sm">
             <X size={14} /> Abbrechen
           </button>

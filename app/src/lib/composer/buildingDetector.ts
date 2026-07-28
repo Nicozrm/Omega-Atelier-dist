@@ -52,6 +52,36 @@ function toPart(
   }
 }
 
+/**
+ * Was ein vermessener Nebenbaukörper ist. Der Klartext des Katasters
+ * entscheidet, wo er gepflegt ist; sonst die Fläche.
+ *
+ * Die Schwellen kommen aus der Sache selbst: unter 12 m² passt kein Auto hinein
+ * — das ist ein Schuppen, im Modell eine `extension` ohne Tor. Ab 12 m² ist es
+ * eine Einzelgarage, und breite Zeilen sind mehrere davon. Ein Carport lässt
+ * sich aus dem Umriss nicht von einer Garage unterscheiden; ohne Klartext wird
+ * deshalb die Garage angenommen, weil die häufiger ist.
+ */
+export function ancillaryKind(b: { areaSqm: number; functionText?: string; usage?: string }): BuildingPart['kind'] {
+  const text = `${b.usage ?? ''} ${b.functionText ?? ''}`
+  if (/carport/i.test(text)) return 'carport'
+  if (/überdachung/i.test(text)) return 'carport'
+  if (/garage/i.test(text)) return 'garage'
+  if (/wintergarten/i.test(text)) return 'conservatory'
+  return b.areaSqm >= 12 ? 'garage' : 'extension'
+}
+
+/**
+ * Die Höhe eines Nebenbaukörpers. Weder Kataster noch OSM kennen sie, also
+ * bleibt sie abgeleitet — bewusst niedrig gehalten, damit ein Nebengebäude im
+ * Modell nie größer wirkt als es ist.
+ */
+export function ancillaryHeightM(b: { areaSqm: number }): number {
+  if (b.areaSqm < 12) return 2.3 // Schuppen
+  if (b.areaSqm < 40) return 2.8 // Einzel- oder Doppelgarage
+  return 3.1 // Garagenzeile, meist mit flacher Attika
+}
+
 export function detectBuilding(property: PropertyFeature, ctx: AnalysisContext): BuildingFeature {
   const rng = ctx.rng.fork(0x424c4447) // 'BLDG'
 
@@ -72,9 +102,27 @@ export function detectBuilding(property: PropertyFeature, ctx: AnalysisContext):
       ? Math.max(1, Math.round(osmLevels))
       : cadastral.areaSqm < 90 ? 1 : 2
     const heightM = Math.round((stories * cityStyleStoreyHeightM + 0.4) * 10) / 10
+
+    // Nebengebäude: vermessen statt erfunden.
+    //
+    // Der prozedurale Zweig weiter unten würfelt Garage, Anbau und Terrasse an
+    // plausible Stellen. Wo das Kataster sie kennt, ist jedes Würfeln ein
+    // Rückschritt — es sieht aus wie eine Messung und ist keine. Also werden
+    // hier die echten Umrisse übernommen; abgeleitet wird nur die Höhe, denn
+    // die kennt auch das Kataster nicht.
+    const parts: BuildingPart[] = [{ kind: 'main', polygon: footprint, heightM, confidence: 0.96 }]
+    for (const extra of ctx.alkis?.ownAncillary ?? []) {
+      parts.push({
+        kind: ancillaryKind(extra),
+        polygon: polygonToLocal(ctx.frame, extra.ring),
+        heightM: ancillaryHeightM(extra),
+        confidence: measured(null, ctx.alkis!.source).confidence,
+      })
+    }
+
     return {
       footprint,
-      parts: [{ kind: 'main', polygon: footprint, heightM, confidence: 0.96 }],
+      parts,
       heightM,
       stories,
       areaSqm: cadastral.areaSqm,

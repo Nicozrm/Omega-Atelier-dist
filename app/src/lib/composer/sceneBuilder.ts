@@ -385,30 +385,48 @@ export function buildScene(scene: DetectedScene): OmegaSceneDraft {
     { deviceId: 'bosch-twinguard', x: houseCx, y: round(houseBB.y0 + (houseBB.y1 - houseBB.y0) * 0.3), note: 'Rauchmelder' },
   )
 
-  // Garage as a small structure.
-  const garagePart = building.parts.find((p) => p.kind === 'garage' || p.kind === 'carport')
-  if (garagePart) {
-    const gb = bboxOfLocal(garagePart.polygon)
+  // Nebengebäude — **alle**, nicht nur das erste.
+  //
+  // Vorher stand hier `parts.find(...)`: ein Grundstück hatte genau eine
+  // Garage, weil der Generator genau eine erfunden hatte. Sobald das Kataster
+  // die Wahrheit liefert, ist das falsch — an der Kolpingstraße 9 sind es eine
+  // Garagenzeile *und* ein Schuppen, und der zweite wäre stillschweigend
+  // verschwunden.
+  const ancillaryParts = building.parts.filter(
+    (p) => p.kind === 'garage' || p.kind === 'carport' || p.kind === 'extension',
+  )
+  // Gleiche Bezeichnung mehrfach → durchnummerieren, damit der Grundriss
+  // lesbar bleibt statt dreimal „Garage" zu zeigen.
+  const nameCount = new Map<string, number>()
+  for (const part of ancillaryParts) {
+    const gb = bboxOfLocal(part.polygon)
     const gBB: BBoxCm = {
       x0: round(gb.minX * 100 + PAD),
       y0: round(gb.minY * 100 + PAD),
       x1: round(gb.maxX * 100 + PAD),
       y1: round(gb.maxY * 100 + PAD),
     }
-    ground.walls.push(...buildShell(streetSide, gBB, garagePart.kind === 'garage'))
+    const base = part.kind === 'garage' ? 'Garage' : part.kind === 'carport' ? 'Carport' : 'Nebengebäude'
+    const seen = (nameCount.get(base) ?? 0) + 1
+    nameCount.set(base, seen)
+    const label = seen === 1 ? base : `${base} ${seen}`
+
+    // Nur Garagen bekommen ein Tor; ein Schuppen hat eine Tür wie jede Wand.
+    ground.walls.push(...buildShell(streetSide, gBB, part.kind === 'garage'))
     ground.rooms.push({
-      name: garagePart.kind === 'garage' ? 'Garage' : 'Carport',
+      name: label,
       polygon: rectPoly(gBB.x0, gBB.y0, gBB.x1, gBB.y1),
       zoneType: 'indoor',
       floorMaterialId: 'floor-concrete',
     })
     ground.labels.push({
-      text: garagePart.kind === 'garage' ? 'Garage' : 'Carport',
+      text: label,
       x: round((gBB.x0 + gBB.x1) / 2),
       y: round((gBB.y0 + gBB.y1) / 2),
       size: 12,
     })
   }
+  const garagePart = ancillaryParts.find((p) => p.kind === 'garage' || p.kind === 'carport')
 
   // Vegetation → editable furniture.
   let treeCount = 0
