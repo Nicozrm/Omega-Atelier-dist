@@ -82,5 +82,49 @@ say(
   `Westsonne sitzt bei px ${west.toFixed(0)} — also auf der Naht, das dreifache Auftragen ist nötig`,
 )
 
+
+/* ── Die Kuppel ─────────────────────────────────────────────────────────
+ *
+ * Der Himmel liegt nicht mehr als `scene.background` an, sondern als Textur auf
+ * einer von innen gesehenen Kugel. Damit kommt eine zweite Zuordnung ins Spiel
+ * — die UV-Achse der `SphereGeometry` —, und sie läuft der equirektangulären
+ * **entgegen**. Wer das übersieht, bekommt einen spiegelverkehrten Himmel: die
+ * Sonne steht dann links, während die Schatten von rechts fallen. Das ist grob
+ * falsch und trotzdem leicht zu übersehen, weil ein gespiegelter Himmel für
+ * sich genommen völlig richtig aussieht.
+ *
+ * `SphereGeometry` erzeugt (three r169):
+ *     x = −r · cos(2πu) · sin(θ)
+ *     z = +r · sin(2πu) · sin(θ)
+ * Daraus folgt die Richtung zu jedem UV, und `equirectUv` sagt, wo dieselbe
+ * Richtung in der Karte steht.
+ */
+console.log('\n══ Kuppel — Kugel-UV gegen Karten-UV')
+const sphereDir = (u: number, elevation: number) => {
+  const theta = Math.PI / 2 - elevation
+  return {
+    x: -Math.cos(2 * Math.PI * u) * Math.sin(theta),
+    y: Math.cos(theta),
+    z: Math.sin(2 * Math.PI * u) * Math.sin(theta),
+  }
+}
+let maxErr = 0
+for (const u of [0, 0.125, 0.25, 0.5, 0.75, 0.9]) {
+  const want = equirectUv(sphereDir(u, 0))[0]
+  // Was die Kuppel liefert: repeat.x = −1, offset.x = 1  →  u' = 1 − u
+  const got = (1 - u) % 1
+  const err = Math.min(Math.abs(got - want), 1 - Math.abs(got - want))
+  maxErr = Math.max(maxErr, err)
+  console.log(`   Kugel-u ${u.toFixed(3)}  →  Karte ${want.toFixed(3)}   Spiegelung liefert ${got.toFixed(3)}`)
+}
+say(maxErr < 1e-9, `Spiegelung u' = 1 − u stimmt (grösster Fehler ${maxErr.toExponential(1)})`)
+
+// Und die Gegenprobe: ohne Spiegelung wäre es falsch.
+let wrong = 0
+for (const u of [0.125, 0.25, 0.75]) {
+  if (Math.abs(u - equirectUv(sphereDir(u, 0))[0]) > 1e-6) wrong++
+}
+say(wrong === 3, `ohne Spiegelung stünde der Himmel verkehrt (${wrong} von 3 Stellen daneben)`)
+
 console.log(`\n${bad === 0 ? '✓ Himmelsprojektion stimmt.' : `✗ ${bad} Fehler.`}`)
 process.exit(bad === 0 ? 0 : 1)

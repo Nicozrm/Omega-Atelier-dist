@@ -21,10 +21,18 @@
  *     durch ein Vielfaches an Luft. Ein gleichmässiger Verlauf von oben nach
  *     unten ist die eine Kurve, die mit Sicherheit falsch ist.
  *
- * Hier steht deshalb ein equirektangulärer Himmel als `scene.background`. Er
- * hängt an der Kamera wie der echte, trägt Sonnenscheibe, Sonnenhof und
- * Horizontdunst, und seine Kurve ist die eines Himmels und nicht die einer
+ * Hier steht deshalb eine echte Himmelskuppel **in** der Szene. Sie hängt an
+ * der Kamera wie der echte Himmel, trägt Sonnenscheibe, Sonnenhof und
+ * Horizontdunst, und ihre Kurve ist die eines Himmels und nicht die einer
  * Verlaufsfüllung.
+ *
+ * Ein vierter Punkt kam erst beim Nachsehen dazu, und er war der schlimmste:
+ * der Canvas ist mit `alpha: false` angelegt. Der CSS-Verlauf hinter dem
+ * Element konnte also **nie** zu sehen sein — ohne gesetzten Szenenhintergrund
+ * war die Löschfarbe schwarz. Der Taghimmel dieser Anwendung war schlicht ein
+ * schwarzes Loch, und der Kommentar am nächtlichen Stadthintergrund sagt es
+ * sogar („where a black void reads worst"), ohne dass jemand den Schluss
+ * gezogen hätte.
  *
  * **Was er ausdrücklich nicht anfasst:** `scene.environment`. Die Innenräume
  * werden von einer eigens gebauten Archviz-Box beleuchtet (siehe
@@ -33,8 +41,8 @@
  * Hintergrund und Beleuchtung sind hier zwei Fragen.
  */
 
-import { useEffect, useMemo } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { EnvironmentState } from '@/lib/environment'
 import { publishSkyEnvironment } from './skyEnvironment'
@@ -211,50 +219,101 @@ export function SkyDome({ env, groundAlbedo = DEFAULT_GROUND_ALBEDO }: SkyDomePr
     groundAlbedo.map((c) => Math.round(c * 40)).join(','),
   ].join('|'), [env, groundAlbedo])
 
-  useEffect(() => {
-    const tex = new THREE.CanvasTexture(paintSky(env, groundAlbedo))
-    tex.mapping = THREE.EquirectangularReflectionMapping
-    tex.colorSpace = THREE.SRGBColorSpace
-    // Der Verlauf ist glatt; ohne lineare Filterung an der Naht bei u = 0
-    // entsteht eine sichtbare senkrechte Kante.
-    tex.minFilter = THREE.LinearFilter
-    tex.magFilter = THREE.LinearFilter
-    tex.wrapS = THREE.RepeatWrapping
-    tex.needsUpdate = true
+  /*
+   * Der Himmel wird als **Kuppel gezeichnet**, nicht als `scene.background`
+   * gesetzt.
+   *
+   * Der Weg über `scene.background` war der naheliegende und hat sich als
+   * unbrauchbar erwiesen: three wandelt eine equirektanguläre Hintergrundtextur
+   * intern erst in eine Cubemap um (`WebGLCubeMaps.get` →
+   * `fromEquirectangularTexture`), und auf dem Gerät des Nutzers kam dabei
+   * nichts an — der Himmel blieb schwarz, obwohl die Karte nachweislich
+   * korrekte Farben enthält (der Nebel, der dieselbe Horizontfarbe benutzt,
+   * war richtig). Ich kann diese Umwandlung hier nicht nachstellen, also
+   * ersetze ich sie durch einen Weg ohne sie.
+   *
+   * Die Kuppel bringt zwei Dinge mit, die der Hintergrund nicht hatte:
+   *
+   *  • **Sie wird tonwertabgebildet.** three setzt bei einer sRGB-Hintergrund-
+   *    textur `toneMapped = false`; der Himmel lief also an AgX vorbei,
+   *    während die gesamte Geometrie hindurchgeht. Ein Himmel, der anders
+   *    belichtet ist als die Häuser davor, sitzt nicht im Bild — genau der
+   *    Eindruck „wirkt wie ein Hintergrund", den er nicht mehr machen soll.
+   *  • **Sie ist nachvollziehbar.** Ein `MeshBasicMaterial` auf einer Kugel
+   *    hat keine verborgene Umwandlung.
+   *
+   * Zur Spiegelung der Textur: die Kugel wird von **innen** gesehen
+   * (`BackSide`), und ihre UV-Achse läuft der equirektangulären entgegen.
+   * Durchgerechnet an vier Stellen — Kugel-u 0 → 0, 0,25 → 0,75, 0,5 → 0,5,
+   * 0,75 → 0,25 — also `u_karte = 1 − u_kugel`. Genau das leisten
+   * `repeat.x = −1` und `offset.x = 1`. Ohne diese Zeile stünde die Sonne
+   * spiegelverkehrt am Himmel, während die Schatten weiter aus der richtigen
+   * Richtung kämen. Geprüft in `verify:sky`.
+   */
+  const [tex, setTex] = useState<THREE.Texture | null>(null)
+  const domeRef = useRef<THREE.Mesh>(null)
 
-    const previous = scene.background
-    scene.background = tex
+  useEffect(() => {
+    const canvas = paintSky(env, groundAlbedo)
+
+    // Fassung für die Kuppel — waagerecht gespiegelt (siehe oben).
+    const dome = new THREE.CanvasTexture(canvas)
+    dome.colorSpace = THREE.SRGBColorSpace
+    dome.minFilter = THREE.LinearFilter
+    dome.magFilter = THREE.LinearFilter
+    dome.wrapS = THREE.RepeatWrapping
+    dome.repeat.x = -1
+    dome.offset.x = 1
+    dome.needsUpdate = true
+    setTex(dome)
 
     /*
-     * Derselbe Himmel noch einmal, als Spiegelkarte.
+     * Dieselbe Karte noch einmal, als Spiegelkarte für die Materialien.
      *
      * Eine Spiegelung braucht die Karte in vorgefilterter Form — je rauer ein
-     * Material, desto unschärfer muss sein Spiegelbild sein, und das lässt sich
-     * nicht zur Laufzeit je Pixel rechnen. `PMREMGenerator` erzeugt genau diese
-     * Stufenleiter einmal.
+     * Material, desto unschärfer sein Spiegelbild, und das lässt sich nicht
+     * zur Laufzeit je Pixel rechnen. `PMREMGenerator` erzeugt diese
+     * Stufenleiter einmal. Hier ist die Ausrichtung ungespiegelt, weil die
+     * Umgebungskarte in Weltkoordinaten gelesen wird und nicht über UV.
      *
-     * Sie wird bewusst **nicht** an `scene.environment` gehängt: dort sitzt die
-     * Innenraum-Box, die die Räume beleuchtet. Stattdessen bekommt jedes
-     * Aussenmaterial sie einzeln als `envMap` — siehe `skyEnvironment`.
+     * Sie wird bewusst **nicht** an `scene.environment` gehängt: dort sitzt
+     * die Archviz-Box, die die Innenräume beleuchtet.
      */
+    const src = new THREE.CanvasTexture(canvas)
+    src.mapping = THREE.EquirectangularReflectionMapping
+    src.colorSpace = THREE.SRGBColorSpace
+    src.needsUpdate = true
+
     let env3d: THREE.WebGLRenderTarget | null = null
     try {
       const pmrem = new THREE.PMREMGenerator(gl)
-      env3d = pmrem.fromEquirectangular(tex)
+      env3d = pmrem.fromEquirectangular(src)
       pmrem.dispose()
       publishSkyEnvironment(env3d.texture)
     } catch {
       // Ohne Spiegelkarte bleibt der Himmel trotzdem stehen; die Fenster
-      // spiegeln dann nur nichts. Ein Himmel ohne Spiegelung ist besser als
-      // gar keiner.
+      // spiegeln dann nur nichts.
       publishSkyEnvironment(null)
     }
+    src.dispose()
+
+    /*
+     * Rückfall: eine schlichte Farbe als Hintergrund.
+     *
+     * Der Canvas ist mit `alpha: false` angelegt, also undurchsichtig — ohne
+     * gesetzten Hintergrund ist die Löschfarbe **schwarz**, und der
+     * CSS-Verlauf hinter dem Element kann grundsätzlich nicht durchscheinen.
+     * Genau daher kam der schwarze Taghimmel. Eine Farbe geht in three den
+     * `isColor`-Weg ohne jede Umwandlung; sollte die Kuppel je ausfallen,
+     * steht dort dann der Horizontton statt eines Lochs.
+     */
+    const previous = scene.background
+    scene.background = new THREE.Color(env.sky.horizonColor)
 
     return () => {
-      // Nur zurücknehmen, was noch uns gehört — sonst überschreibt der Abbau
-      // eines alten Himmels den neuen, der schon hängt.
-      if (scene.background === tex) scene.background = previous
-      tex.dispose()
+      scene.background = previous
+      setTex(null)
+      dome.dispose()
       if (env3d) {
         publishSkyEnvironment(null)
         env3d.dispose()
@@ -264,5 +323,24 @@ export function SkyDome({ env, groundAlbedo = DEFAULT_GROUND_ALBEDO }: SkyDomePr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene, gl, key])
 
-  return null
+  // Die Kuppel bleibt um die Kamera zentriert — sonst fährt man aus ihr heraus.
+  useFrame(({ camera }) => {
+    if (domeRef.current) domeRef.current.position.copy(camera.position)
+  })
+
+  if (!tex) return null
+  return (
+    <mesh ref={domeRef} renderOrder={-1000} frustumCulled={false} scale={900}>
+      <sphereGeometry args={[1, 48, 32]} />
+      <meshBasicMaterial
+        map={tex}
+        side={THREE.BackSide}
+        // Ohne Tiefentest und ohne Tiefenschreiben zeichnet die Kuppel als
+        // Erstes und alles andere darüber — unabhängig von ihrer Grösse.
+        depthTest={false}
+        depthWrite={false}
+        fog={false}
+      />
+    </mesh>
+  )
 }
