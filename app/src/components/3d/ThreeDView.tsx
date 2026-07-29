@@ -89,6 +89,7 @@ import {
 import { Static, BATCH_MIN, batchStatic } from './Static'
 import { Neighbourhood3D } from './Neighbourhood3D'
 import { useOrthophotoGround } from './useOrthophotoGround'
+import { SkyDome } from './SkyDome'
 import { useNeighbourhood, type WorldSource } from './useNeighbourhood'
 import { StreetLife } from './StreetLife'
 import {
@@ -5749,6 +5750,11 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           never touched; the far edge follows the *generated world*, not the
           plan — a 12 m apartment sits inside a 350 m estate, and a fog band
           sized from the apartment would bury the whole neighbourhood in haze. */}
+      {/* Der Himmel als Teil der Szene, nicht als Bild dahinter — mit
+          Sonnenscheibe, Sonnenhof und Horizontdunst (siehe SkyDome). Der
+          CSS-Verlauf am Canvas bleibt als Rückfall für den Moment vor dem
+          ersten Zeichnen bestehen. */}
+      <SkyDome env={env} />
       <fog attach="fog" args={[env.sky.horizonColor, Math.max(wM, hM) * 2.4, Math.max(world.extentM * 1.9, Math.max(wM, hM) * 7.5)]} />
       <hemisphereLight args={[new THREE.Color(env.lighting.hemisphere.skyColor).lerp(new THREE.Color('#ffefd6'), 0.16), env.lighting.hemisphere.groundColor, env.lighting.hemisphere.intensity * 0.72]} />
       {/* Trim the flat uniform fill hard so the directional key, cove strips and

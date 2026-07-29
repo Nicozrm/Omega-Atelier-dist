@@ -30,8 +30,179 @@ export function mkTex(cv: HTMLCanvasElement, srgb: boolean, rep: [number, number
 // Deterministic PRNG so textures are stable across reloads (no reflow flicker).
 export function texRnd(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
 
-let _brickTex: { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } | null = null
-export function brickTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
+/* ══════════════════════ Von Relief zu Material ══════════════════════════
+ *
+ * Bis hierher hatte jede Oberfläche zwei Kanäle: Farbe und eine Höhenkarte,
+ * die als `bumpMap` hing. Das erklärt, warum die Gebäude „zu generisch" und
+ * die Straßen „ohne Materialdetail" wirken — und die Ursache liegt nicht in
+ * der Farbe, sondern in zwei fehlenden Kanälen.
+ *
+ * **Erstens: der Glanz war überall gleich.** Jede Klinkerfassade hatte
+ * roughness 0.88, jedes Dach 0.85, jede Straße 0.95 — als konstante Zahl über
+ * die ganze Fläche. In der Wirklichkeit ist genau das Gegenteil der Fall: die
+ * Mörtelfuge ist stumpf und der Klinker daneben leicht glasig, die
+ * Ziegelmulde hält Feuchtigkeit und die Wölbung darüber glänzt, der
+ * ausgefahrene Asphaltstreifen ist poliert und der Rand rau. Dieser
+ * *Unterschied* im Glanz ist es, was eine Fläche als Material lesbar macht.
+ * Ohne ihn bleibt selbst eine gute Farbtextur eine bemalte Ebene, egal wie
+ * gut das Licht ist.
+ *
+ * **Zweitens: `bumpMap` ist die schwächere Technik.** three leitet daraus im
+ * Fragment-Shader über Bildschirmableitungen (`dFdx`/`dFdy`) eine Normale ab.
+ * Das ist billig, aber es rauscht bei flachem Blickwinkel — und flach ist
+ * genau der Winkel, unter dem man eine Straße sieht. Eine echte Normalkarte
+ * wird stattdessen gefiltert wie jede andere Textur, bleibt also bis zum
+ * Horizont ruhig und trägt die Reliefrichtung sauber.
+ *
+ * Beide Kanäle werden hier aus der Höhenkarte abgeleitet, die es ohnehin schon
+ * gibt. Das kostet keine neuen Zeichenroutinen und keine externen Dateien —
+ * nur einen Durchlauf über 256² bis 512² Pixel, einmal beim ersten Aufruf.
+ */
+
+/** Farbe, Relief und Glanz einer Oberfläche — vollständiges PBR-Material. */
+export interface Surface {
+  map: THREE.CanvasTexture
+  /** Die rohe Höhenkarte. Bleibt erhalten, damit alte Aufrufer nicht brechen. */
+  bump: THREE.CanvasTexture
+  normal: THREE.CanvasTexture
+  roughness: THREE.CanvasTexture
+}
+
+/** Graustufen-Helligkeit an einer Stelle, mit Wiederholung an den Rändern. */
+function lumaAt(d: Uint8ClampedArray, W: number, H: number, x: number, y: number): number {
+  const xi = ((x % W) + W) % W
+  const yi = ((y % H) + H) % H
+  const i = (yi * W + xi) * 4
+  return (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255
+}
+
+/**
+ * Höhenkarte → Normalkarte (Sobel).
+ *
+ * Zur Vorzeichenkonvention, weil sie die häufigste stille Verwechslung an
+ * dieser Stelle ist: three erwartet OpenGL-Normalkarten, also **+Y nach
+ * oben**, und eine `CanvasTexture` wird mit `flipY = true` hochgeladen — die
+ * oberste Leinwandzeile wird zu v = 1. Die Leinwand zählt y nach unten, die
+ * Textur v nach oben, also ist `dh/dv = −dh/dy` und damit `n.y = +dy`. Wird
+ * das verwechselt, kippt das ganze Relief: Fugen wölben sich heraus und
+ * Steine liegen vertieft, und zwar so beiläufig, dass es lange niemandem
+ * auffällt.
+ */
+export function normalFromHeight(src: HTMLCanvasElement, strength = 2.2): THREE.CanvasTexture {
+  const W = src.width, H = src.height
+  const d = src.getContext('2d')!.getImageData(0, 0, W, H).data
+  const out = document.createElement('canvas'); out.width = W; out.height = H
+  const octx = out.getContext('2d')!
+  const img = octx.createImageData(W, H)
+  const L = (x: number, y: number) => lumaAt(d, W, H, x, y)
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const tl = L(x - 1, y - 1), t = L(x, y - 1), tr = L(x + 1, y - 1)
+      const l = L(x - 1, y), r = L(x + 1, y)
+      const bl = L(x - 1, y + 1), b = L(x, y + 1), br = L(x + 1, y + 1)
+      const dx = (tr + 2 * r + br) - (tl + 2 * l + bl)
+      const dy = (bl + 2 * b + br) - (tl + 2 * t + tr)
+      let nx = -dx * strength, ny = dy * strength
+      const len = Math.hypot(nx, ny, 1) || 1
+      nx /= len; ny /= len
+      const nz = 1 / len
+      const i = (y * W + x) * 4
+      img.data[i] = (nx * 0.5 + 0.5) * 255
+      img.data[i + 1] = (ny * 0.5 + 0.5) * 255
+      img.data[i + 2] = (nz * 0.5 + 0.5) * 255
+      img.data[i + 3] = 255
+    }
+  }
+  octx.putImageData(img, 0, 0)
+  return mkTex(out, false)
+}
+
+export interface RoughOpts {
+  /** Glanz der erhabenen Stellen — Steinfläche, Ziegelwölbung, Fahrspur. */
+  lo: number
+  /** Glanz der vertieften Stellen — Fuge, Mulde, Rand. */
+  hi: number
+  /** Seed der Verwitterungsflecken. */
+  seed: number
+  /**
+   * Wie stark grossflächige Verwitterung den Glanz zusätzlich verschiebt.
+   *
+   * Das ist der Teil, der wirklich zählt. Relief allein erzeugt Glanzwechsel
+   * im Raster der Steine — regelmäßig, und Regelmäßigkeit liest das Auge als
+   * gedruckt. Erst Flecken, die **grösser sind als ein Stein**, machen daraus
+   * eine Wand, die seit dreissig Jahren im Wetter steht.
+   */
+  patches?: number
+}
+
+/**
+ * Höhenkarte → Rauheitskarte.
+ *
+ * Zwei überlagerte Anteile: das Relief (vertieft = rauer) und darüber eine
+ * grossflächige Verwitterung aus weichen Flecken.
+ */
+export function roughFromHeight(src: HTMLCanvasElement, o: RoughOpts): THREE.CanvasTexture {
+  const W = src.width, H = src.height
+  const d = src.getContext('2d')!.getImageData(0, 0, W, H).data
+  const rnd = texRnd(o.seed)
+  const amp = o.patches ?? 0.18
+
+  // Verwitterung: weiche Flecken, deutlich grösser als ein einzelner Stein.
+  // Sie werden gekachelt gezeichnet (neunfach versetzt), damit die Fläche an
+  // der Nahtstelle nicht plötzlich sauber wird.
+  const pv = document.createElement('canvas'); pv.width = W; pv.height = H
+  const px = pv.getContext('2d')!
+  px.fillStyle = '#808080'; px.fillRect(0, 0, W, H)
+  for (let i = 0; i < 26; i++) {
+    const cx = rnd() * W, cy = rnd() * H
+    const rad = (0.12 + rnd() * 0.3) * W
+    const up = rnd() < 0.5
+    for (const [ox, oy] of [[0, 0], [-W, 0], [W, 0], [0, -H], [0, H], [-W, -H], [W, -H], [-W, H], [W, H]]) {
+      const g = px.createRadialGradient(cx + ox, cy + oy, 0, cx + ox, cy + oy, rad)
+      g.addColorStop(0, up ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)')
+      g.addColorStop(1, 'rgba(128,128,128,0)')
+      px.fillStyle = g
+      px.beginPath(); px.arc(cx + ox, cy + oy, rad, 0, Math.PI * 2); px.fill()
+    }
+  }
+  const pd = px.getImageData(0, 0, W, H).data
+
+  const out = document.createElement('canvas'); out.width = W; out.height = H
+  const octx = out.getContext('2d')!
+  const img = octx.createImageData(W, H)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4
+      // Vertieft (dunkel in der Höhenkarte) ist rau, erhaben ist glatter.
+      const relief = o.lo + (o.hi - o.lo) * (1 - lumaAt(d, W, H, x, y))
+      const patch = (pd[i] / 255 - 0.5) * 2 * amp
+      const v = Math.max(0.04, Math.min(1, relief + patch)) * 255
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v
+      img.data[i + 3] = 255
+    }
+  }
+  octx.putImageData(img, 0, 0)
+  return mkTex(out, false)
+}
+
+/** Baut aus Farb- und Höhenleinwand die vollständige Oberfläche. */
+function surfaceOf(
+  colour: HTMLCanvasElement,
+  height: HTMLCanvasElement,
+  rough: RoughOpts,
+  normalStrength = 2.2,
+): Surface {
+  return {
+    map: mkTex(colour, true),
+    bump: mkTex(height, false),
+    normal: normalFromHeight(height, normalStrength),
+    roughness: roughFromHeight(height, rough),
+  }
+}
+
+let _brickTex: Surface | null = null
+export function brickTextures(): Surface {
   if (_brickTex) return _brickTex
   const W = 512, H = 512, rows = 13, bh = H / rows, mortar = 3
   const rnd = texRnd(7)
@@ -60,14 +231,17 @@ export function brickTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasT
       bx.fillRect(x + mortar / 2, y + mortar / 2, bw - mortar, bh - mortar)
     }
   }
-  _brickTex = { map: mkTex(cv, true), bump: mkTex(bv, false) }
+  // Klinker: die Mörtelfuge ist stumpf (0.96), der gebrannte Stein deutlich
+  // glasiger (0.62). Genau dieser Sprung an jeder Fugenkante ist das, was eine
+  // Backsteinwand als Backstein lesbar macht.
+  _brickTex = surfaceOf(cv, bv, { lo: 0.62, hi: 0.96, seed: 7, patches: 0.20 }, 2.4)
   return _brickTex
 }
 
 // Vertical timber cladding (Holzverschalung) — warm planks with grain streaks
 // and recessed grooves between boards, for the 'board' facade construction.
-let _boardTex: { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } | null = null
-export function boardTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
+let _boardTex: Surface | null = null
+export function boardTextures(): Surface {
   if (_boardTex) return _boardTex
   const W = 512, H = 512, planks = 6, pw = W / planks
   const rnd = texRnd(23)
@@ -97,12 +271,14 @@ export function boardTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasT
     bx.fillRect(x + 2, 0, pw - 4, H)
     bx.fillStyle = '#2a2a2a'; bx.fillRect(x, 0, 2, H)
   }
-  _boardTex = { map: mkTex(cv, true), bump: mkTex(bv, false) }
+  // Holzverschalung: die lasierte Brettfläche zieht noch etwas Glanz (0.72),
+  // die Nut dazwischen ist roh und stumpf (0.98).
+  _boardTex = surfaceOf(cv, bv, { lo: 0.72, hi: 0.98, seed: 13, patches: 0.14 }, 1.8)
   return _boardTex
 }
 
-let _roofTex: { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } | null = null
-export function roofTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
+let _roofTex: Surface | null = null
+export function roofTextures(): Surface {
   if (_roofTex) return _roofTex
   const W = 512, H = 512, rows = 16, rh = H / rows
   const rnd = texRnd(23)
@@ -130,28 +306,69 @@ export function roofTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTe
       bx.fillRect(x + 1, y + 1, tw - 2, rh - 2)
     }
   }
-  _roofTex = { map: mkTex(cv, true), bump: mkTex(bv, false) }
+  // Dachziegel: die Wölbung wird vom Regen blank gewaschen (0.55), in der
+  // Mulde zwischen den Kursen sitzen Moos und Schmutz (0.95). Die Flecken sind
+  // hier am stärksten — kein Dach altert gleichmässig.
+  _roofTex = surfaceOf(cv, bv, { lo: 0.55, hi: 0.95, seed: 23, patches: 0.26 }, 2.6)
   return _roofTex
 }
 
-let _asphaltTex: THREE.CanvasTexture | null = null
-export function asphaltTexture(): THREE.CanvasTexture {
+let _asphaltTex: Surface | null = null
+/**
+ * Asphalt.
+ *
+ * Vorher war das die einzige Oberfläche der Szene **ganz ohne Relief** — eine
+ * Farbtextur mit konstanter Rauheit 0.95. Deshalb las sich jede Straße als
+ * graues Band: sie hatte keine Körnung, die das Licht hätte brechen können,
+ * und keinen Glanzwechsel, an dem das Auge eine Oberfläche erkennt.
+ *
+ * Jetzt bekommt sie beides, und zwar so, wie eine Straße wirklich altert: der
+ * Splitt gibt die feine Körnung, und darüber liegen die **Fahrspuren** — zwei
+ * Bänder, die von Reifen glatt poliert sind, während der Rand rau bleibt. Das
+ * ist der Unterschied, den man auf jedem Foto einer Wohnstraße sieht und den
+ * kein noch so gutes Licht ersetzt.
+ */
+export function asphaltSurface(): Surface {
   if (_asphaltTex) return _asphaltTex
   const W = 256, H = 256, rnd = texRnd(41)
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H
   const cx = cv.getContext('2d')!
+  const bv = document.createElement('canvas'); bv.width = W; bv.height = H
+  const bx = bv.getContext('2d')!
   cx.fillStyle = '#57565a'; cx.fillRect(0, 0, W, H)
+  bx.fillStyle = '#8a8a8a'; bx.fillRect(0, 0, W, H)
   for (let i = 0; i < 9000; i++) {
     const g = rnd()
+    const x = rnd() * W, y = rnd() * H, w = 1 + rnd() * 1.5, h = 1 + rnd() * 1.5
     cx.fillStyle = g < 0.5 ? `rgba(0,0,0,${0.05 + rnd() * 0.25})` : `rgba(210,210,214,${0.04 + rnd() * 0.14})`
-    cx.fillRect(rnd() * W, rnd() * H, 1 + rnd() * 1.5, 1 + rnd() * 1.5)
+    cx.fillRect(x, y, w, h)
+    // Der Splittkorn steht vor, die Bindemittelmulde liegt zurück.
+    bx.fillStyle = g < 0.5 ? `rgba(0,0,0,${0.12 + rnd() * 0.2})` : `rgba(255,255,255,${0.1 + rnd() * 0.22})`
+    bx.fillRect(x, y, w, h)
   }
-  _asphaltTex = mkTex(cv, true)
+  // Fahrspuren: zwei polierte Bänder quer über die Kachel. Sie kommen in die
+  // Höhenkarte als leichte Senke — daraus wird beides zugleich, eine flache
+  // Mulde in der Normalkarte und ein glatter Streifen in der Rauheitskarte.
+  for (const cxr of [0.3, 0.72]) {
+    const g = bx.createLinearGradient(0, (cxr - 0.12) * H, 0, (cxr + 0.12) * H)
+    g.addColorStop(0, 'rgba(255,255,255,0)')
+    g.addColorStop(0.5, 'rgba(255,255,255,0.42)')
+    g.addColorStop(1, 'rgba(255,255,255,0)')
+    bx.fillStyle = g
+    bx.fillRect(0, (cxr - 0.12) * H, W, 0.24 * H)
+  }
+  // `lo` gilt für die hellen (erhabenen/polierten) Stellen — die Fahrspur.
+  _asphaltTex = surfaceOf(cv, bv, { lo: 0.58, hi: 0.98, seed: 41, patches: 0.22 }, 1.4)
   return _asphaltTex
 }
 
-let _paverTex: { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } | null = null
-export function paverTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
+/** Rückwärtskompatibel: nur die Farbkarte. */
+export function asphaltTexture(): THREE.CanvasTexture {
+  return asphaltSurface().map
+}
+
+let _paverTex: Surface | null = null
+export function paverTextures(): Surface {
   if (_paverTex) return _paverTex
   const W = 256, H = 256, n = 4, cell = W / n, rnd = texRnd(59)
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H
@@ -168,7 +385,9 @@ export function paverTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasT
     for (let s = 0; s < 12; s++) { cx.fillStyle = `rgba(0,0,0,${rnd() * 0.06})`; cx.fillRect(x + rnd() * cell, y + rnd() * cell, 2, 2) }
     bx.fillStyle = '#d0d0d0'; bx.fillRect(x + 1.5, y + 1.5, cell - 3, cell - 3)
   }
-  _paverTex = { map: mkTex(cv, true), bump: mkTex(bv, false) }
+  // Betonstein: die begangene Fläche ist von Schuhsohlen poliert (0.68), der
+  // Fugensand daneben bleibt vollständig stumpf (1.0).
+  _paverTex = surfaceOf(cv, bv, { lo: 0.68, hi: 1.0, seed: 59, patches: 0.16 }, 2.0)
   return _paverTex
 }
 

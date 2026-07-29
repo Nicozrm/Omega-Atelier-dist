@@ -27,7 +27,8 @@ import { quantise, type Rgb } from '@/lib/world/roofColours'
 import { RoundedBox } from '@react-three/drei'
 import { Static } from './Static'
 import {
-  brickTextures, boardTextures, roofTextures, asphaltTexture, paverTextures, grassTexture,
+  brickTextures, boardTextures, roofTextures, asphaltSurface, paverTextures, grassTexture,
+  type Surface,
 } from '@/lib/proceduralTextures'
 import { seasonPalette, snowed, mixHex, type Season } from '@/lib/season'
 import type { DayPhase } from '@/lib/environment'
@@ -108,6 +109,31 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
     c.repeat.set(rx, ry)
     textures.push(c)
     return c
+  }
+
+  /**
+   * Hängt eine vollständige Oberfläche an ein Material — Farbe, Relief und
+   * Glanz, alle drei in derselben Kachelung.
+   *
+   * Dass die Kachelung für alle Kanäle dieselbe sein muss, ist kein Detail:
+   * läuft die Rauheitskarte anders als die Farbkarte, sitzt der matte Fleck
+   * neben der Fuge statt in ihr, und die Fläche wirkt schmutzig statt
+   * strukturiert. Deshalb geht es durch **eine** Funktion und nicht durch drei
+   * Zuweisungen nebeneinander.
+   *
+   * `roughness` wird dabei auf 1 gesetzt: three **multipliziert** den
+   * Skalarwert mit der Karte. Bliebe er auf 0.85 stehen, wäre die
+   * mühsam gezeichnete Bandbreite von 0.55 bis 0.98 auf 0.47 bis 0.83
+   * zusammengedrückt — und der Glanzunterschied, um den es hier geht,
+   * verlöre ein Sechstel seiner Wirkung.
+   */
+  const surfaceOn = (mm: THREE.MeshStandardMaterial, s: Surface, rx: number, ry: number) => {
+    mm.map = clone(s.map, rx, ry)
+    mm.normalMap = clone(s.normal, rx, ry)
+    mm.normalScale = new THREE.Vector2(0.85, 0.85)
+    mm.roughnessMap = clone(s.roughness, rx, ry)
+    mm.roughness = 1
+    return mm
   }
 
   const brick = brickTextures()
@@ -216,20 +242,18 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
   m.apron.color.copy(m.lawn.color)
   m.apron.side = THREE.DoubleSide
   m.lawnPlot.map = clone(grassTexture(), 6, 6)
-  m.road.map = clone(asphaltTexture(), span / 3, 1.4)
+  // Straßen und Wege bekommen dasselbe vollständige Material wie die Fassaden:
+  // Relief als Normalkarte statt als `bumpMap`, und vor allem eine
+  // **Rauheitskarte**. Bei einer Straße trägt die den größten Teil der Wirkung
+  // — die polierte Fahrspur neben dem rauen Rand ist das, woran das Auge
+  // Asphalt erkennt, nicht der Grauton.
+  const asph = asphaltSurface()
+  surfaceOn(m.road, asph, span / 3, 1.4)
   m.road.color.set(dim(spec.palette.road))
-  if (spec.street.surface === 'pavers') {
-    m.road.map = clone(pav.map, span / 4, 2)
-    m.road.bumpMap = clone(pav.bump, span / 4, 2)
-    m.road.bumpScale = 0.008
-  }
-  m.walk.map = clone(pav.map, span / 2, 0.8)
-  m.walk.bumpMap = clone(pav.bump, span / 2, 0.8)
-  m.walk.bumpScale = 0.006
+  if (spec.street.surface === 'pavers') surfaceOn(m.road, pav, span / 4, 2)
+  surfaceOn(m.walk, pav, span / 2, 0.8)
   m.walk.color.set(dim(spec.palette.sidewalk))
-  m.drive.map = clone(pav.map, 2, 4)
-  m.drive.bumpMap = clone(pav.bump, 2, 4)
-  m.drive.bumpScale = 0.006
+  surfaceOn(m.drive, pav, 2, 4)
   m.drive.color.set(dim('#e6e2da'))
 
   // Facades: one material per palette entry, each carrying the surface its
@@ -242,16 +266,12 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
       metalness: 0,
     })
     if (surface === 'brick') {
-      mm.map = clone(brick.map, 4, 4)
-      mm.bumpMap = clone(brick.bump, 4, 4)
-      mm.bumpScale = 0.012
+      surfaceOn(mm, brick, 4, 4)
       // The brick canvas already carries its own colour, so tint it white-ish
       // and let the palette entry act as a multiplier.
       mm.color.set(dim(mixHex(hex, '#ffffff', 0.35)))
     } else if (surface === 'board') {
-      mm.map = clone(board.map, 3, 3)
-      mm.bumpMap = clone(board.bump, 3, 3)
-      mm.bumpScale = 0.01
+      surfaceOn(mm, board, 3, 3)
       mm.color.set(dim(mixHex(hex, '#ffffff', 0.2)))
     }
     return mm
@@ -259,9 +279,7 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
 
   const roofs: THREE.MeshStandardMaterial[] = spec.palette.roofs.map((hex) => {
     const mm = new THREE.MeshStandardMaterial({ color: dim(roofTint(hex)), roughness: 0.85, metalness: 0.05 })
-    mm.map = clone(tiles.map, 4, 3)
-    mm.bumpMap = clone(tiles.bump, 4, 3)
-    mm.bumpScale = 0.01
+    surfaceOn(mm, tiles, 4, 3)
     return mm
   })
 
@@ -269,13 +287,37 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
     F(i === 3 && sp.blossom > 0 ? mixHex(c, '#e8b8c8', sp.blossom) : c),
   )
 
+  /**
+   * Dasselbe Laub in vier Spielarten je Grundton.
+   *
+   * Vorher gab es genau vier Laubmaterialien für die ganze Szene, und jeder
+   * Baum einer Art griff auf dieselben Indizes zu. Zwei Nadelbäume nebeneinander
+   * waren damit bis auf Neigung und Drehung **identisch** — und das ist der
+   * eigentliche Grund, warum die Bepflanzung „zu wenig Variation" hat. Nicht zu
+   * wenig Farbe, sondern zu wenig *Unterschied* zwischen Nachbarn.
+   *
+   * Die Spielarten verschieben nicht nur die Helligkeit. Ein Ahorn neben einer
+   * Linde unterscheidet sich im Farbton, nicht in der Belichtung: der eine geht
+   * ins Blaugrüne, der andere ins Gelbgrüne, der dritte ist von Staub und Alter
+   * stumpf. Deshalb je ein Schritt in eine andere Richtung.
+   */
+  const foliageVars = sp.foliage.map((c, i) => {
+    const base = i === 3 && sp.blossom > 0 ? mixHex(c, '#e8b8c8', sp.blossom) : c
+    return [
+      base,
+      mixHex(base, '#1d3a22', 0.24), // tiefes, kühles Grün — Schattenkrone
+      mixHex(base, '#c8d76a', 0.20), // gelbgrüner Austrieb
+      mixHex(base, '#7d8a6a', 0.22), // staubig, ausgeblichen
+    ].map(F)
+  })
+
   const carBodies = ['#20242c', '#6b1f22', '#2b3a4d', '#c9c4bc', '#3d5a44', '#8d8f95']
     .map((c) => S(c, 0.35, 0.5))
 
   const all: THREE.Material[] = [
-    ...Object.values(m), ...facades, ...roofs, ...foliage, ...carBodies,
+    ...Object.values(m), ...facades, ...roofs, ...foliage, ...foliageVars.flat(), ...carBodies,
   ]
-  return { m, facades, roofs, foliage, carBodies, textures, all, spec, sp }
+  return { m, facades, roofs, foliage, foliageVars, carBodies, textures, all, spec, sp }
 }
 
 /* ────────────────────────────── Mesh vocabulary ─────────────────────── */
@@ -287,39 +329,69 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
  */
 function tree(key: string, kind: TreeKind, at: Vec2, scale: number, mats: MatBag): React.ReactNode {
   const s = scale
-  const { m, foliage } = mats
+  const { m, foliageVars } = mats
   const lean = (Math.abs(Math.sin(at.x * 12.9898 + at.z * 78.233)) % 1) * 0.08 - 0.04
   const spin = at.x + at.z
+
+  /**
+   * Der Baum wählt selbst — aus seinem Standort.
+   *
+   * Kein Zufallsgenerator und kein Index von aussen: derselbe Baum an derselben
+   * Stelle sieht nach jedem Neuladen gleich aus, sein Nachbar zwei Meter weiter
+   * aber anders. Das ist die Bedingung dafür, dass Variation nicht zu Flimmern
+   * wird, sobald die Szene neu aufgebaut wird.
+   */
+  const h = (n: number) => {
+    const x = Math.sin(at.x * 127.1 + at.z * 311.7 + n * 74.7) * 43758.5453
+    return x - Math.floor(x)
+  }
+  /** Laub in der Spielart, die dieser Baum gezogen hat. */
+  const fol = (i: number) => {
+    const row = foliageVars[i % foliageVars.length]
+    return row[Math.floor(h(i + 1) * row.length) % row.length]
+  }
+  /**
+   * Wuchsform statt nur Grösse.
+   *
+   * Ein gleichmässiger Skalierungsfaktor macht aus einem Baum nur einen
+   * grösseren desselben Baums — die Silhouette bleibt dieselbe, und genau die
+   * erkennt das Auge wieder. Breite und Höhe getrennt zu variieren erzeugt
+   * dagegen echte Wuchsformen: hier eine schmale, hochgeschossene Krone, dort
+   * eine breite, gedrungene.
+   */
+  const gw = 0.82 + h(31) * 0.38
+  const gh = 0.84 + h(37) * 0.36
+  const shape: [number, number, number] = [gw, gh, gw]
 
   switch (kind) {
     case 'conifer':
       return (
-        <group key={key} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
+        <group key={key} scale={shape} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
           <mesh position={[0, 0.5 * s, 0]} castShadow material={m.trunk}><cylinderGeometry args={[0.09 * s, 0.13 * s, 1.0 * s, 6]} /></mesh>
-          <mesh position={[0, 1.55 * s, 0]} castShadow material={foliage[1]}><coneGeometry args={[1.0 * s, 1.7 * s, 8]} /></mesh>
-          <mesh position={[0, 2.6 * s, 0]} castShadow material={foliage[0]}><coneGeometry args={[0.76 * s, 1.5 * s, 8]} /></mesh>
-          <mesh position={[0, 3.45 * s, 0]} castShadow material={foliage[1]}><coneGeometry args={[0.5 * s, 1.15 * s, 8]} /></mesh>
+          <mesh position={[0, 1.55 * s, 0]} castShadow material={fol(1)}><coneGeometry args={[1.0 * s, 1.7 * s, 8]} /></mesh>
+          <mesh position={[0, 2.6 * s, 0]} castShadow material={fol(0)}><coneGeometry args={[0.76 * s, 1.5 * s, 8]} /></mesh>
+          <mesh position={[0, 3.45 * s, 0]} castShadow material={fol(1)}><coneGeometry args={[0.5 * s, 1.15 * s, 8]} /></mesh>
         </group>
       )
     case 'cypress':
       return (
-        <group key={key} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean * 0.4]}>
+        <group key={key} scale={shape} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean * 0.4]}>
           <mesh position={[0, 0.3 * s, 0]} castShadow material={m.trunk}><cylinderGeometry args={[0.08 * s, 0.11 * s, 0.6 * s, 6]} /></mesh>
-          <mesh position={[0, 2.4 * s, 0]} castShadow material={foliage[0]}><coneGeometry args={[0.42 * s, 4.0 * s, 8]} /></mesh>
+          <mesh position={[0, 2.4 * s, 0]} castShadow material={fol(0)}><coneGeometry args={[0.42 * s, 4.0 * s, 8]} /></mesh>
         </group>
       )
     case 'olive':
       return (
-        <group key={key} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
+        <group key={key} scale={shape} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
           <mesh position={[0, 0.62 * s, 0]} castShadow material={m.trunk}><cylinderGeometry args={[0.13 * s, 0.2 * s, 1.25 * s, 7]} /></mesh>
-          <mesh position={[0.2 * s, 1.5 * s, 0]} scale={[1.25, 0.66, 1.2]} castShadow material={foliage[3]}><icosahedronGeometry args={[0.9 * s, 1]} /></mesh>
-          <mesh position={[-0.45 * s, 1.25 * s, 0.2 * s]} scale={[1.1, 0.6, 1.1]} castShadow material={foliage[2]}><icosahedronGeometry args={[0.62 * s, 1]} /></mesh>
+          <mesh position={[0.2 * s, 1.5 * s, 0]} scale={[1.25, 0.66, 1.2]} castShadow material={fol(3)}><icosahedronGeometry args={[0.9 * s, 1]} /></mesh>
+          <mesh position={[-0.45 * s, 1.25 * s, 0.2 * s]} scale={[1.1, 0.6, 1.1]} castShadow material={fol(2)}><icosahedronGeometry args={[0.62 * s, 1]} /></mesh>
         </group>
       )
     case 'palm': {
       const fronds = [0, 1, 2, 3, 4, 5]
       return (
-        <group key={key} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
+        <group key={key} scale={shape} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
           <mesh position={[0, 2.0 * s, 0]} castShadow material={m.trunk}><cylinderGeometry args={[0.13 * s, 0.2 * s, 4.0 * s, 7]} /></mesh>
           {fronds.map((f) => {
             const a = (f / fronds.length) * Math.PI * 2
@@ -329,7 +401,7 @@ function tree(key: string, kind: TreeKind, at: Vec2, scale: number, mats: MatBag
                 position={[Math.cos(a) * 0.75 * s, 4.05 * s, Math.sin(a) * 0.75 * s]}
                 rotation={[0.5, -a, 0]}
                 castShadow
-                material={foliage[2]}
+                material={fol(2)}
               >
                 <boxGeometry args={[1.7 * s, 0.05 * s, 0.42 * s]} />
               </mesh>
@@ -340,21 +412,21 @@ function tree(key: string, kind: TreeKind, at: Vec2, scale: number, mats: MatBag
     }
     case 'birch':
       return (
-        <group key={key} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean * 1.4]}>
+        <group key={key} scale={shape} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean * 1.4]}>
           <mesh position={[0, 1.15 * s, 0]} castShadow material={m.trim}><cylinderGeometry args={[0.07 * s, 0.1 * s, 2.3 * s, 7]} /></mesh>
-          <mesh position={[0, 2.7 * s, 0]} scale={[0.86, 1.15, 0.86]} castShadow material={foliage[3]}><icosahedronGeometry args={[0.86 * s, 1]} /></mesh>
-          <mesh position={[0.34 * s, 2.2 * s, 0.2 * s]} scale={[0.8, 1, 0.8]} castShadow material={foliage[2]}><icosahedronGeometry args={[0.5 * s, 1]} /></mesh>
+          <mesh position={[0, 2.7 * s, 0]} scale={[0.86, 1.15, 0.86]} castShadow material={fol(3)}><icosahedronGeometry args={[0.86 * s, 1]} /></mesh>
+          <mesh position={[0.34 * s, 2.2 * s, 0.2 * s]} scale={[0.8, 1, 0.8]} castShadow material={fol(2)}><icosahedronGeometry args={[0.5 * s, 1]} /></mesh>
         </group>
       )
     default:
       return (
-        <group key={key} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
+        <group key={key} scale={shape} position={[at.x, GROUND_Y, at.z]} rotation={[0, spin, lean]}>
           <mesh position={[0, 0.85 * s, 0]} castShadow material={m.trunk}><cylinderGeometry args={[0.08 * s, 0.12 * s, 1.7 * s, 7]} /></mesh>
           <mesh position={[0.32 * s, 1.4 * s, 0]} rotation={[0, 0, -0.65]} castShadow material={m.trunk}><cylinderGeometry args={[0.035 * s, 0.055 * s, 0.75 * s, 5]} /></mesh>
-          <mesh position={[0, 2.2 * s, 0]} scale={[1, 0.86, 1]} castShadow material={foliage[0]}><icosahedronGeometry args={[1.02 * s, 1]} /></mesh>
-          <mesh position={[0.64 * s, 1.9 * s, 0.2 * s]} scale={[1, 0.8, 1]} castShadow material={foliage[1]}><icosahedronGeometry args={[0.6 * s, 1]} /></mesh>
-          <mesh position={[-0.52 * s, 1.75 * s, -0.28 * s]} scale={[1, 0.78, 1]} castShadow material={foliage[2]}><icosahedronGeometry args={[0.55 * s, 1]} /></mesh>
-          <mesh position={[-0.12 * s, 2.85 * s, 0.3 * s]} castShadow material={foliage[1]}><icosahedronGeometry args={[0.48 * s, 1]} /></mesh>
+          <mesh position={[0, 2.2 * s, 0]} scale={[1, 0.86, 1]} castShadow material={fol(0)}><icosahedronGeometry args={[1.02 * s, 1]} /></mesh>
+          <mesh position={[0.64 * s, 1.9 * s, 0.2 * s]} scale={[1, 0.8, 1]} castShadow material={fol(1)}><icosahedronGeometry args={[0.6 * s, 1]} /></mesh>
+          <mesh position={[-0.52 * s, 1.75 * s, -0.28 * s]} scale={[1, 0.78, 1]} castShadow material={fol(2)}><icosahedronGeometry args={[0.55 * s, 1]} /></mesh>
+          <mesh position={[-0.12 * s, 2.85 * s, 0.3 * s]} castShadow material={fol(1)}><icosahedronGeometry args={[0.48 * s, 1]} /></mesh>
         </group>
       )
   }
