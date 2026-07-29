@@ -24,7 +24,8 @@ import {
 import { worldOsmSource } from '@/lib/composer/sources/overpass'
 import { worldAlkisSource, WORLD_LIMITS } from '@/lib/composer/sources/alkis'
 import { extractCadastreBuildings, extractParcels, parcelAtPoint } from '@/lib/composer/resolvers/alkisResolver'
-import { withoutOwnParcel, withoutOwnWithin, worldBuildingsFromCadastre } from '@/lib/composer/resolvers/alkisWorld'
+import { applyLod2, withoutOwnParcel, withoutOwnWithin, worldBuildingsFromCadastre } from '@/lib/composer/resolvers/alkisWorld'
+import { lod2Source } from '@/lib/composer/sources/lod2'
 import { extractBuildings, extractPois, extractRoads, pickOwnBuilding } from '@/lib/composer/resolvers/osmResolver'
 import { plainFrame, polygonToLocal } from '@/lib/composer/frame'
 import type { PlanGeo } from '@/types'
@@ -91,11 +92,15 @@ export function useNeighbourhood(input: UseNeighbourhoodInput): NeighbourhoodRes
         //
         // Das Kataster darf ausfallen, ohne die Nachbarschaft zu verhindern —
         // außerhalb von NRW gibt es dort schlicht nichts.
-        const [result, alkisSite] = await Promise.all([
+        const [result, alkisSite, lod2] = await Promise.all([
           worldOsmSource.fetchSite(at, ac.signal),
           worldAlkisSource
             .fetchSite(at, WORLD_ALKIS_RADIUS_M, ac.signal, WORLD_LIMITS)
             .catch(() => undefined),
+          // LoD2 braucht gemessen 40 bis 55 Sekunden und läuft regelmäßig in
+          // 502er. Es darf die Nachbarschaft deshalb nicht aufhalten: die Welt
+          // entsteht ohne, und die Höhen kommen nach, wenn sie kommen.
+          lod2Source.fetchAround(at, undefined, undefined, ac.signal).catch(() => []),
         ])
         if (run !== runRef.current) return
         // Früher stand hier `if (!result) return`. Das war ein Kopplungsfehler:
@@ -136,6 +141,16 @@ export function useNeighbourhood(input: UseNeighbourhoodInput): NeighbourhoodRes
           fromCadastre = own
             ? withoutOwnParcel(fromCadastre, polygonToLocal(frame, own.ring))
             : withoutOwnWithin(fromCadastre, reference, 12)
+        }
+
+        // Gemessene Höhen und Dachformen aus LoD2 auflegen.
+        if (fromCadastre.length > 0 && lod2.length > 0) {
+          const applied = applyLod2(fromCadastre, lod2, frame)
+          fromCadastre = applied.buildings
+          console.info(
+            `%cOMEGA Höhen%c ${applied.matched} von ${fromCadastre.length} Gebäuden vermessen (LoD2)`,
+            'font-weight:600;color:#C7A24E', 'color:inherit',
+          )
         }
 
         const buildings = fromCadastre.length > osmBuildings.length ? fromCadastre : osmBuildings

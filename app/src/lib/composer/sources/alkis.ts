@@ -125,7 +125,7 @@ export class HttpAlkisTransport implements AlkisTransport {
   constructor(
     private readonly base = ALKIS_BASE,
     private readonly fetchFn: typeof fetch = (...a) => fetch(...a),
-    private readonly timeoutMs = SOURCE_BUDGET_MS.alkis,
+    private readonly timeoutMs: number = SOURCE_BUDGET_MS.alkis,
   ) {}
 
   async items<P>(collection: string, bbox: string, limit: number, signal?: AbortSignal): Promise<AlkisCollection<P>> {
@@ -202,6 +202,16 @@ export class AlkisSource {
   constructor(
     private readonly transport: AlkisTransport = new HttpAlkisTransport(),
     private readonly cache: AlkisCache = new MemoryAlkisCache(),
+    /**
+     * Eigene Frist je Einsatzzweck.
+     *
+     * Die enge Analyse-Abfrage muss in Sekunden antworten — dort wartet ein
+     * Mensch. Die weite Nachbarschaftsabfrage holt mit `WORLD_LIMITS` bis zu
+     * 900 Gebäude und braucht entsprechend länger; mit der Analyse-Frist von
+     * 7 s lief sie regelmäßig ins Leere und die Nachbarschaft blieb erfunden,
+     * ohne dass etwas fehlschlug.
+     */
+    private readonly budgetMs: number = SOURCE_BUDGET_MS.alkis as number,
   ) {}
 
   /**
@@ -242,7 +252,7 @@ export class AlkisSource {
       if (site.parcels.length === 0 && site.buildings.length === 0) return undefined
       this.cache.set(key, { site, storedAt: Date.now() })
       return site as AlkisSite | undefined
-    }, hit?.site, SOURCE_BUDGET_MS.alkis, signal)
+    }, hit?.site, this.budgetMs, signal)
   }
 }
 
@@ -254,4 +264,8 @@ export const alkisSource = new AlkisSource()
  * Abfrage im Hintergrund läuft und warten darf, während die Analyse es nicht
  * darf.
  */
-export const worldAlkisSource = new AlkisSource()
+export const worldAlkisSource = new AlkisSource(
+  new HttpAlkisTransport(undefined, undefined, 30_000),
+  new MemoryAlkisCache(),
+  30_000,
+)

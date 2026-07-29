@@ -147,3 +147,71 @@ export function withoutOwnWithin(
 ): WorldBuilding[] {
   return buildings.filter((b) => Math.hypot(b.centre.x - at.x, b.centre.y - at.y) > radiusM)
 }
+
+
+/* ─────────────────────── Höhen und Dachformen (LoD2) ─────────────────── */
+
+/**
+ * Wie hoch ein Dach über der Traufe aufragt, je Form.
+ *
+ * LoD2 liefert `measuredHeight` als **First**höhe — die Spitze, nicht die
+ * Traufe. Der Weltgenerator rechnet dagegen in Geschossen und setzt das Dach
+ * obendrauf. Wer die Firsthöhe direkt in Geschosse umrechnet, baut jedes
+ * Satteldachhaus rund ein Geschoss zu hoch, und die ganze Straße wächst.
+ *
+ * Die Werte sind der übliche Bereich für Wohngebäude: ein Satteldach mit 8 m
+ * Spannweite und 40° Neigung ragt rund 3,3 m auf, ein flach geneigtes Pultdach
+ * gut einen Meter, ein Flachdach gar nicht.
+ */
+const ROOF_RISE_M: Record<string, number> = {
+  flat: 0.25, pent: 1.2, gable: 3.0, hip: 2.6,
+}
+
+/**
+ * Überträgt gemessene Höhe und Dachform auf die Katastergebäude.
+ *
+ * Zugeordnet wird über die Lage: LoD2 und ALKIS teilen sich denselben
+ * Gebäudegrundriss aus dem Liegenschaftskataster, die Schwerpunkte liegen also
+ * dicht beieinander. 8 m Suchradius deckt die Abweichung durch
+ * Gebäudeteil-Zerlegung ab — LoD2 zerlegt ein Haus in `BuildingPart`s, deren
+ * Schwerpunkte vom Gesamtschwerpunkt abweichen —, bleibt aber unter dem
+ * typischen Abstand zweier Nachbarhäuser.
+ */
+export function applyLod2(
+  buildings: WorldBuilding[],
+  lod2: { at: { lat: number; lng: number }; heightM: number; roofShape?: string }[],
+  frame: LocalFrame,
+  storeyHeightM = 2.85,
+  radiusM = 8,
+): { buildings: WorldBuilding[]; matched: number } {
+  if (lod2.length === 0) return { buildings, matched: 0 }
+
+  // Einmal in den lokalen Rahmen bringen; danach ist die Zuordnung reine
+  // Rechnung in Metern.
+  const pts = lod2.map((l) => ({ ...l, local: polygonToLocal(frame, [l.at])[0] }))
+
+  let matched = 0
+  const out = buildings.map((b) => {
+    let best: typeof pts[number] | undefined
+    let bestD = radiusM
+    for (const l of pts) {
+      const d = Math.hypot(l.local.x - b.centre.x, l.local.y - b.centre.y)
+      if (d < bestD) { bestD = d; best = l }
+    }
+    if (!best) return b
+    matched++
+
+    const shape = (best.roofShape ?? b.roofShape) as WorldBuilding['roofShape']
+    const rise = ROOF_RISE_M[shape ?? 'gable'] ?? 3.0
+    // Traufhöhe = Firsthöhe minus Dachaufbau, nie unter einem Geschoss.
+    const eaves = Math.max(storeyHeightM, best.heightM - rise)
+    return {
+      ...b,
+      // Der Generator rechnet in Geschossen; die Rundung ist der Preis dafür,
+      // dass der bestehende Pfad unverändert bleibt.
+      levels: Math.max(1, Math.round(eaves / storeyHeightM)),
+      roofShape: shape,
+    }
+  })
+  return { buildings: out, matched }
+}

@@ -51,5 +51,30 @@ const spread = hs[Math.floor(hs.length*0.9)] - hs[Math.floor(hs.length*0.1)]
 console.log(`  gemessen: ${spread.toFixed(1)} m Spanne zwischen dem 10. und 90. Perzentil`)
 check(spread > 3, 'die gemessenen Höhen streuen kaum — dann brächte LoD2 wenig')
 
+
+// ── Zuordnung auf die Katastergebäude ───────────────────────────────────
+import { worldAlkisSource, WORLD_LIMITS } from '../src/lib/composer/sources/alkis'
+import { extractCadastreBuildings } from '../src/lib/composer/resolvers/alkisResolver'
+import { worldBuildingsFromCadastre, applyLod2 } from '../src/lib/composer/resolvers/alkisWorld'
+import { plainFrame } from '../src/lib/composer/frame'
+
+const frame = plainFrame(at)
+const site = await worldAlkisSource.fetchSite(at, 160, undefined, WORLD_LIMITS)
+const cad = site ? worldBuildingsFromCadastre(extractCadastreBuildings(site), frame, [], { x: 0, y: 0 }) : []
+const near = cad.filter((b) => Math.hypot(b.centre.x, b.centre.y) < 160)
+const { buildings, matched } = applyLod2(near, list, frame)
+console.log(`\n── Zuordnung ──`)
+console.log(`  ${matched} von ${near.length} Katastergebäuden haben eine gemessene Höhe`)
+const quote = matched / Math.max(1, near.length)
+console.log(`  Trefferquote ${(quote * 100).toFixed(0)} %`)
+if (quote < 0.5) { console.log('  ✗ zu wenige Treffer — Suchradius oder Rahmen prüfen'); process.exit(1) }
+
+const lv = buildings.filter((b) => b.levels !== undefined).map((b) => b.levels!)
+const hist = new Map<number, number>()
+for (const l of lv) hist.set(l, (hist.get(l) ?? 0) + 1)
+console.log('  Geschosse:', [...hist].sort((a,b)=>a[0]-b[0]).map(([k,v]) => `${k}×${v}`).join('  '))
+if (lv.some((l) => l < 1 || l > 12)) { console.log('  ✗ unplausible Geschosszahl'); process.exit(1) }
+console.log('  ✓ alle Geschosszahlen plausibel (1–12)')
+
 console.log(failures === 0 ? '\n✓ alle Prüfungen bestanden' : `\n✗ ${failures} Prüfung(en) fehlgeschlagen`)
 process.exit(failures === 0 ? 0 : 1)
