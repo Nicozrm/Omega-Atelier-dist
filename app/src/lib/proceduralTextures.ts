@@ -286,7 +286,32 @@ export function roofTextures(): Surface {
   const cx = cv.getContext('2d')!
   const bv = document.createElement('canvas'); bv.width = W; bv.height = H
   const bx = bv.getContext('2d')!
-  cx.fillStyle = '#1c1917'; cx.fillRect(0, 0, W, H)
+  /*
+   * Die Ziegel werden **neutral** gezeichnet, nicht dunkel.
+   *
+   * Hier standen Kachelwerte um 43 von 255 auf fast schwarzem Grund. Das sieht
+   * für sich genommen nach einem dunklen Ziegeldach aus — nur ist diese Karte
+   * keine Farbe, sondern ein Detail, und three **multipliziert** sie mit der
+   * Materialfarbe aus der Regionalpalette. Gerechnet:
+   *
+   *     Kachel 43        → 0,024 linear
+   *     MED-Dach #a4633d → 0,371 linear
+   *     Produkt          → 0,009   — praktisch Schwarz
+   *
+   * Deshalb war jedes Dach der Mittelmeer-Siedlung schwarz statt terrakotta,
+   * und auch die dunklen deutschen Dächer landeten bei 0,001 und damit unter
+   * jedem realen Dachmaterial. Die Palette hatte faktisch keine Wirkung mehr.
+   *
+   * Beim Klinker ist dieselbe Falle ausdrücklich behandelt — dort wird die
+   * Materialfarbe weiss aufgehellt, damit die Karte die Farbe tragen kann. Am
+   * Dach fehlte diese Behandlung, und dadurch multiplizierten sich zwei
+   * dunkle Werte.
+   *
+   * Neutral gezeichnet trägt die Karte die **Struktur** — Kurse, Wölbung,
+   * Schattenkante — und die Palette die Farbe. Das ist die Aufgabenteilung,
+   * die eine Palette überhaupt erst sinnvoll macht.
+   */
+  cx.fillStyle = '#6e6a66'; cx.fillRect(0, 0, W, H)          // Fuge zwischen den Ziegeln
   bx.fillStyle = '#202020'; bx.fillRect(0, 0, W, H)
   const tw = W / 8
   for (let r = 0; r < rows; r++) {
@@ -294,13 +319,13 @@ export function roofTextures(): Surface {
     const off = (r % 2) * (tw / 2)
     for (let c = -1; c < 9; c++) {
       const x = c * tw + off
-      const sh = 34 + Math.floor(rnd() * 18)
-      cx.fillStyle = `rgb(${sh},${sh - 4},${sh - 6})`
+      const sh = 178 + Math.floor(rnd() * 34)
+      cx.fillStyle = `rgb(${sh},${sh - 3},${sh - 5})`
       cx.fillRect(x + 1, y + 1, tw - 2, rh - 1)
       // rounded pantile highlight along the top of each course
-      cx.fillStyle = 'rgba(255,255,255,0.06)'
+      cx.fillStyle = 'rgba(255,255,255,0.10)'
       cx.fillRect(x + 1, y + 1, tw - 2, rh * 0.34)
-      cx.fillStyle = 'rgba(0,0,0,0.4)'
+      cx.fillStyle = 'rgba(0,0,0,0.35)'
       cx.fillRect(x, y + rh - 2, tw, 2)                       // shadow lip between courses
       bx.fillStyle = `rgb(${150 + Math.floor(rnd() * 40)},${150},${150})`
       bx.fillRect(x + 1, y + 1, tw - 2, rh - 2)
@@ -482,4 +507,21 @@ export function nightCityTexture(): THREE.CanvasTexture {
   tex.wrapT = THREE.ClampToEdgeWrapping
   _cityTex = tex
   return tex
+}
+
+/**
+ * Mittlere **lineare** Reflexion einer Leinwand, 0…1 je Kanal.
+ *
+ * Für die Frage „verschluckt diese Karte die Palettenfarbe, mit der sie
+ * multipliziert wird". Linear gemittelt, nicht in Bildwerten: ein Mittel von
+ * 128 entspricht 0,22 Reflexion und nicht 0,50, und genau diese Verwechslung
+ * lässt eine Karte harmloser aussehen, als sie ist.
+ */
+export function srgbMean(cv: HTMLCanvasElement): [number, number, number] {
+  const ctx = cv.getContext('2d')!
+  const d = ctx.getImageData(0, 0, cv.width, cv.height).data
+  const lin = (v: number) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4) }
+  let r = 0, g = 0, b = 0, n = 0
+  for (let i = 0; i < d.length; i += 4) { r += lin(d[i]); g += lin(d[i + 1]); b += lin(d[i + 2]); n++ }
+  return [r / n, g / n, b / n]
 }

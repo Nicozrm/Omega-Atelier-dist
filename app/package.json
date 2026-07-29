@@ -19,6 +19,7 @@
     "verify:materials": "vite-node scripts/verify-materials.ts",
     "verify:gi": "vite-node scripts/verify-gi.ts",
     "verify:roof": "vite-node scripts/verify-roof.ts",
+    "verify:textures": "vite-node scripts/verify-textures.ts",
     "verify:imagery": "vite-node scripts/verify-imagery.ts",
     "verify:structures": "vite-node scripts/verify-structures.ts",
     "verify:shadow-frustum": "vite-node scripts/verify-shadow-frustum.ts",
@@ -45,6 +46,7 @@
     "zustand": "5.0.1"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^0.1.60",
     "@types/node": "^22.20.1",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
