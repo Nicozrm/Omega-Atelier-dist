@@ -27,7 +27,7 @@
  */
 
 import { deriveEnvironment } from '../src/lib/environment'
-import { hexToRgb, skyEnvIntensity, skyIrradiance, skyRadiance, srgbToLinear, type Rgb, type SkyModel } from '../src/lib/skyModel'
+import { hexToRgb, skyIrradiance, skyIrradianceLinear, skyRadiance, srgbToLinear, type Rgb, type SkyModel } from '../src/lib/skyModel'
 
 /** Rasen — der häufigste Untergrund einer Wohnsiedlung. */
 const LAWN: Rgb = [0.19, 0.25, 0.14]
@@ -81,45 +81,49 @@ console.log(`\n   Spreizung über den Tag: ${spread.toFixed(1)}×`)
 console.log('   → eine **feste** envMapIntensity ist damit ausgeschlossen. Auf den')
 console.log('     Mittag abgestimmt wäre die Nacht um das Vierfache überstrahlt.')
 
-/* ── Die eigentliche Prüfung ────────────────────────────────────────────
+/* ── Die Falle, in die ich gelaufen bin ────────────────────────────────
  *
- * `skyEnvIntensity` rechnet den Faktor aus derselben Formel, die den Himmel
- * zeichnet. Wenn das stimmt, muss die gelieferte Beleuchtungsstärke zu **jeder**
- * Tageszeit denselben Anteil des Hemisphärenlichts treffen — unabhängig davon,
- * wie stark das Verhältnis oben schwankt. Genau das ist hier die Behauptung.
+ * Ich habe die Himmelskarte an **alle** Aussenmaterialien gehängt, auch an die
+ * diffusen, und ihre Stärke gegen das Hemisphärenlicht bemessen. Das war die
+ * falsche Bezugsgrösse, und zwar auf eine Art, die man dem Code nicht ansieht:
+ *
+ *   Eine eigene `envMap` am Material **ersetzt** `scene.environment`.
+ *
+ * Der Beitrag, den man verdrängt, ist also nicht das Hemisphärenlicht, sondern
+ * die Archviz-Box — und die ist um ein Vielfaches heller. Ergebnis: praktisch
+ * das gesamte Umgebungslicht des Aussenraums war weg, jede Klinkerwand las sich
+ * als flache Farbe, und im Bild sah es nach „schlechteren Texturen" aus.
+ *
+ * Beide Grössen linear, so wie three sie verrechnet — es dekodiert jeden Texel
+ * von sRGB nach linear und faltet danach. Wer in der Bildwertskala bilanziert,
+ * überschätzt den Himmel zusätzlich um mehr als das Doppelte.
  */
-const SHARE = 0.66
-console.log('\n══ Gerechnete Stärke — trifft sie den Zielanteil zu jeder Tageszeit?')
-console.log(`   Zielanteil ${Math.round(SHARE * 100)} % der bisherigen Umgebungshelligkeit\n`)
-console.log('   Fall                envMapIntensity   geliefert   Ziel      Abweichung')
-
-let worstErr = 0
+const BOX_IRRADIANCE = 1.396 // Innenraum-Box, Studio-Preset, hemisphärisch integriert
+console.log('\n══ Umgebungslicht — was eine eigene envMap verdrängt')
+console.log(`   Innenraum-Box (scene.environment)   ${BOX_IRRADIANCE.toFixed(3)} linear\n`)
+console.log('   Fall                Himmel linear   nötige Stärke   gesetzt war')
+let worstFactor = 0
 for (const [label, hour, weather] of CASES) {
   const env = deriveEnvironment({ timeOfDay: hour, weather })
-  const sky: SkyModel = {
+  const E = skyIrradianceLinear({
     zenith: hexToRgb(env.sky.zenithColor),
     horizon: hexToRgb(env.sky.horizonColor),
     cloudiness: env.weather.cloudiness,
     groundAlbedo: LAWN,
-  }
-  const hemiColour = hexToRgb(env.lighting.hemisphere.skyColor)
-  const hemiI = env.lighting.hemisphere.intensity * 0.72
-  const k = skyEnvIntensity(sky, hemiColour, hemiI, SHARE)
-  const delivered = lum(skyIrradiance(sky)) * k
-  const target = lum(hemiColour) * hemiI * SHARE
-  const err = target > 0.02 ? Math.abs(delivered - target) / target : 0
-  worstErr = Math.max(worstErr, err)
-  console.log(
-    `   ${label.padEnd(18)} ${k.toFixed(3).padStart(9)}   ${delivered.toFixed(1).padStart(9)}   ${target.toFixed(1).padStart(6)}    ${(err * 100).toFixed(1)} %`,
-  )
+  })
+  const have = lum(E)
+  const need = BOX_IRRADIANCE / Math.max(1e-6, have)
+  worstFactor = Math.max(worstFactor, need)
+  console.log(`   ${label.padEnd(18)} ${have.toFixed(3).padStart(9)}   ${need.toFixed(1).padStart(9)}×      0,15 – 0,22`)
 }
-
-console.log('\n══ Befund')
 check(
-  worstErr < 0.02,
-  'Belichtung tageszeitfest',
-  `grösste Abweichung ${(worstErr * 100).toFixed(1)} % (die Spreizung von ${spread.toFixed(1)}× ist herausgerechnet)`,
+  worstFactor > 5,
+  'Bezugsgrösse belegt',
+  `die Box ist ${worstFactor.toFixed(0)}× heller als der Himmel — deshalb bleibt sie für alles Diffuse stehen`,
 )
+console.log('   → Der Himmel liegt nur noch auf spiegelnden Materialien (Glas,')
+console.log('     Wasser, Lack, Metall). Dort ist er ein Spiegelbild und keine')
+console.log('     Lichtmenge, und dort ersetzt er das Fotostudio zu Recht.')
 
 /* ── Der eigentlich neue Anteil ─────────────────────────────────────────
  *

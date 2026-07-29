@@ -67,15 +67,6 @@ interface Props {
   phase: DayPhase
   /** The environment's continuous exterior-albedo scale (see lib/environment). */
   daylightScale: number
-  /**
-   * Stärke, mit der die Himmelskarte die diffusen Aussenflächen beleuchtet.
-   *
-   * Kommt aus `skyEnvIntensity` und damit aus derselben Formel, die den Himmel
-   * zeichnet — deshalb als Zahl von aussen und nicht hier ermittelt: die
-   * Bezugsgrösse ist das Hemisphärenlicht der Szene, und das kennt nur der
-   * Aufrufer.
-   */
-  envScale?: number
   season: Season
   /** Full trim only where it can be seen. */
   rich: boolean
@@ -1534,7 +1525,7 @@ const LOD_ANCHOR_STEP_M = 25
 /** Rang der Detailstufen — `massing` ist die grobste. */
 const RANK_LOD: Record<HouseLod, number> = { massing: 0, simple: 1, full: 2 }
 
-export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture, sampleGround, envScale = 0.3 }: Props) {
+export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture, sampleGround }: Props) {
   /**
    * Der Bezugspunkt der Detailstufe.
    *
@@ -1590,65 +1581,61 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     const { m } = mats
 
     /*
-     * Zwei Gruppen, weil zwei verschiedene Dinge passieren.
+     * Nur die **spiegelnden** Materialien bekommen den Himmel.
      *
-     * **Spiegelnd**: Glas, Wasser, Lack, Metall. Hier trägt die Karte das
-     * Spiegelbild, und das darf hell sein — eine Scheibe tut kaum etwas
-     * anderes, als ihre Umgebung zu spiegeln.
+     * Hier standen zwischenzeitlich auch alle diffusen Flächen — Putz,
+     * Klinker, Ziegel, Rasen, Asphalt —, in der Absicht, ihnen den Himmel als
+     * Umgebungslicht zu geben. Das war ein Fehler, und zwar ein grosser: eine
+     * eigene `envMap` am Material **ersetzt** `scene.environment`. Die
+     * Aussenflächen verloren damit die Archviz-Box, die sie vorher beleuchtet
+     * hat, und bekamen dafür den Himmel — nur eben mit einer Stärke, die
+     * gegen das Hemisphärenlicht bemessen war statt gegen die Box.
      *
-     * **Diffus**: Putz, Klinker, Ziegel, Rasen, Asphalt. Hier trägt die Karte
-     * das **Umgebungslicht** — und genau das ist der Global-Illumination-Anteil,
-     * der bisher fehlte. Diese Flächen bekamen ihre Umgebungshelligkeit aus
-     * einem `hemisphereLight`, das den ganzen Himmel durch zwei Farben
-     * annähert, plus aus `scene.environment` — und dort hängt die
-     * Archviz-Box für die *Innenräume*. Eine Hauswand im Freien wurde also
-     * von einem Fotostudio beleuchtet.
+     * Nachgerechnet (`verify:gi`, beide Grössen linear, wie three sie
+     * verrechnet):
      *
-     * Jetzt beleuchtet sie der Himmel, mit seinem Verlauf, seinem hellen Band
-     * über dem Horizont und dem farbigen Rückwurf des Bodens — über Rasen
-     * bekommt eine helle Wand von unten einen grünen Anflug, über Pflaster
-     * nicht.
+     *     Innenraum-Box   1,396
+     *     Himmel 08:15    0,075   →  nötige envMapIntensity 18,7
+     *     gesetzt war                                        0,15
+     *
+     * Also rund **125-fach zu wenig**. Praktisch das gesamte Umgebungslicht des
+     * Aussenraums war weg. Ohne Umgebungslicht liegt auf einer Klinkerwand nur
+     * noch Sonne und Hemisphärenlicht, ihre Struktur verliert die Aufhellung,
+     * in der man sie überhaupt sieht — die Fläche liest sich als flache Farbe,
+     * und genau das war als „die Textur ist schlechter" zu sehen.
+     *
+     * Die Lehre ist nicht „die Zahl war zu klein", sondern: ich habe gegen die
+     * falsche Bezugsgrösse bilanziert. Verglichen wurde mit dem
+     * Hemisphärenlicht, während der Beitrag, den die `envMap` tatsächlich
+     * verdrängt, `scene.environment` ist.
+     *
+     * Deshalb bleibt `scene.environment` für alles Diffuse unangetastet. Der
+     * Himmel liegt nur dort, wo er ein **Spiegelbild** ist und nicht eine
+     * Lichtmenge: Glas, Wasser, Lack, Metall, Solarmodule. Dort ersetzt er die
+     * Fotostudio-Spiegelung, die vorher in den Fenstern stand, und dort ist die
+     * Stärke keine Bilanzfrage — eine Scheibe soll den Himmel so hell zeigen,
+     * wie er ist.
      */
     const reflective: THREE.Material[] = [
       m.glassLit, m.glassDim, m.glassDark, m.shopGlass, m.glassRail,
       m.water, m.poolWater, m.solar, m.metal, m.drain, m.manhole,
       ...mats.carBodies,
     ]
-    const diffuse: THREE.Material[] = [
-      m.lawn, m.apron, m.lawnPlot, m.road, m.walk, m.drive, m.kerb,
-      m.gravel, m.soil, m.sand, m.trim, m.plinth, m.wall, m.ridge,
-      m.chimney, m.fence, m.sill, m.garageDoor, m.door, m.frame,
-      m.hedge, m.hedgeTop, m.trunk, m.dark,
-      ...mats.facades, ...mats.roofs, ...mats.foliage, ...mats.foliageVars.flat(),
-    ]
-
     for (const mat of reflective) {
       const mm = mat as THREE.MeshStandardMaterial
       mm.envMap = skyEnv
       mm.needsUpdate = true
     }
-    for (const mat of diffuse) {
-      const mm = mat as THREE.MeshStandardMaterial
-      mm.envMap = skyEnv
-      // Die Stärke ist **gerechnet**, nicht eingestellt — siehe
-      // `skyEnvIntensity`. Eine feste Zahl müsste sich für eine Tageszeit
-      // entscheiden: das Verhältnis zwischen Karte und Hemisphärenlicht
-      // schwankt über den Tag von rund 3× bis 11×, und auf den Mittag
-      // abgestimmt wäre die Nacht vierfach überstrahlt.
-      mm.envMapIntensity = envScale
-      mm.needsUpdate = true
-    }
-
     return () => {
       // Beim Abbau die Karte wieder lösen: sie gehört dem Himmel, nicht dem
       // Material, und ein Material mit Verweis auf eine freigegebene Textur
       // zeichnet schwarz.
-      for (const mat of [...reflective, ...diffuse]) {
+      for (const mat of reflective) {
         const mm = mat as THREE.MeshStandardMaterial
         if (mm.envMap === skyEnv) { mm.envMap = null; mm.needsUpdate = true }
       }
     }
-  }, [mats, skyEnv, envScale])
+  }, [mats, skyEnv])
 
   const built = useMemo(() => {
     const nodes: React.ReactNode[] = []

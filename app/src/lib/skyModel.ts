@@ -225,3 +225,29 @@ export function srgbToLinear(v: number): number {
   const c = v / 255
   return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
 }
+
+/**
+ * Beleuchtungsstärke wie {@link skyIrradiance}, aber in **linearer** Größe.
+ *
+ * Der Unterschied ist keine Formsache. `skyIrradiance` rechnet in der
+ * 0…255-Skala der Farbwerte, weil es dort mit `hemisphereLight` vergleichbar
+ * ist. Sobald man aber gegen eine echte Umgebungskarte bilanziert, zählt, was
+ * three tatsächlich verrechnet: es dekodiert jeden Texel von sRGB nach linear
+ * und faltet **danach**. Ein Himmel mit dem Bildwert 125 trägt also 0,20 bei
+ * und nicht 0,49 — wer in der Bildwertskala bilanziert, überschätzt ihn um mehr
+ * als das Doppelte.
+ */
+export function skyIrradianceLinear(sky: SkyModel, steps = 256): Rgb {
+  const out: Rgb = [0, 0, 0]
+  const de = Math.PI / 2 / steps
+  const none: Rgb = [0, 0, 0]
+  for (let i = 0; i < steps; i++) {
+    const e = (i + 0.5) * de
+    const L = skyRadiance(sky, Math.sin(e), none)
+    const w = Math.sin(e) * Math.cos(e) * de * 2 * Math.PI
+    out[0] += srgbToLinear(L[0]) * w
+    out[1] += srgbToLinear(L[1]) * w
+    out[2] += srgbToLinear(L[2]) * w
+  }
+  return [out[0] / Math.PI, out[1] / Math.PI, out[2] / Math.PI]
+}
