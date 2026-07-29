@@ -60,8 +60,33 @@ export class OfflineMapProvider implements MapProvider {
     const parcel = parcelAt(tap)
     const spanMeters = spanForZoom(view.zoom)
     return {
-      center: parcel.center,
+      // **Der Tipp, nicht die Zellenmitte.**
+      //
+      // Hier stand `parcel.center` — der Mittelpunkt der erfundenen 26 × 34 m
+      // Rasterzelle. Das war die stillste und teuerste Fehlannahme der ganzen
+      // Pipeline: `image.center` ist der Anker, an dem *jede* echte Quelle
+      // hängt — die ALKIS-Bounding-Box, die Frage „welches Flurstück liegt
+      // unter diesem Punkt", das Luftbild, LoD2. Mit der Zellenmitte wurden
+      // sie alle nach einem Ort gefragt, der bis zu 21 m (halbe Zellendiagonale)
+      // neben dem lag, auf den der Mensch gezeigt hat.
+      //
+      // In einem Wohngebiet mit rund 20 m breiten Parzellen heißt das: der
+      // Punkt landet auf dem Nachbargrundstück oder auf der Straße. Dort liegt
+      // kein Flurstück, `own` bleibt leer — und die Analyse fällt auf das
+      // erzeugte Raster zurück. Genau das war zu sehen: 1166 m² statt der
+      // amtlichen 1044, jede Zeile „geschätzt", 33 % Gesamtkonfidenz, obwohl
+      // der Dienst in 1,4 s die vermessene Grenze geliefert hätte.
+      //
+      // Der Rückfall ändert sich dadurch **nicht**: `detectProperty` ruft für
+      // den synthetischen Fall `parcelAt(image.center)` auf, und die Zellenmitte
+      // liegt per Definition in derselben Zelle wie der Tipp. Gleiche Zelle,
+      // gleicher Seed, gleiche Maße. Es rückt nur der Anker der echten Quellen
+      // dorthin, wo gezeigt wurde.
+      center: tap,
       spanMeters,
+      // Der Seed bleibt zellenbasiert — er soll für zwei Tipps auf dasselbe
+      // Dach dasselbe Ergebnis liefern, und dafür ist die Zelle das richtige
+      // Bezugsmaß, nicht der Pixel.
       seed: parcel.seed,
       metersPerPixel: spanMeters / 640,
       provider: this.id,

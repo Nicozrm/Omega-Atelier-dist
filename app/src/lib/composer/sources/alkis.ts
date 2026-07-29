@@ -148,6 +148,16 @@ export interface AlkisSite {
   landUse: AlkisFeature<LandUseProps>[]
   /** Datenstand der Quelle, aus dem ersten Flurstück übernommen. */
   version?: string
+  /**
+   * Welche Ebenen der Dienst abgeschnitten hat, weil mehr Objekte in der Box
+   * lagen als das Limit zuließ.
+   *
+   * Leer ist der Normalfall und die Voraussetzung dafür, dass „unter diesem
+   * Punkt liegt kein Flurstück" tatsächlich heißt, dass dort keins liegt — und
+   * nicht bloß, dass es nicht auf der Seite stand. Steht hier etwas drin, ist
+   * jede negative Aussage über die Umgebung wertlos.
+   */
+  truncated: string[]
 }
 
 export interface AlkisCache {
@@ -187,8 +197,26 @@ export function bboxAround(at: GeoPoint, radiusM: number): string {
  */
 export interface AlkisLimits { parcels: number; buildings: number; landUse: number }
 
-/** Enge Abfrage um ein Grundstück: ein paar Nachbarn genügen. */
-export const SITE_LIMITS: AlkisLimits = { parcels: 60, buildings: 120, landUse: 60 }
+/**
+ * Enge Abfrage um ein Grundstück.
+ *
+ * Die Zahlen waren einmal 60 / 120 / 60 — „ein paar Nachbarn genügen". Gegen
+ * den echten Dienst gemessen ist das zu knapp: eine 180-m-Box um die
+ * Kolpingstr. 9 enthält **87 Flurstücke**. Es kamen also 60 zurück und 27
+ * fielen weg. Eine OGC API Features sortiert nicht räumlich, sondern liefert
+ * die Seite in Speicherreihenfolge; welche 27 fehlen, ist damit Zufall — und
+ * mit rund 31 % Wahrscheinlichkeit ist das eigene Flurstück dabei.
+ *
+ * Der Ausfall wäre dabei vollkommen lautlos: HTTP 200, gültiges GeoJSON, nur
+ * findet `parcelAtPoint` nichts, und die Analyse fällt auf das erzeugte Raster
+ * zurück, als gäbe es kein Kataster. Genau die Art Fehler, die diese Pipeline
+ * nicht haben darf.
+ *
+ * Mehr zu holen kostet fast nichts: dieselbe Abfrage mit `limit=250`
+ * antwortete in 1,27 s statt 1,44 s, bei 109 kB statt 66 kB. Der Dienst zahlt
+ * für die räumliche Auswahl, nicht für die Zeilen.
+ */
+export const SITE_LIMITS: AlkisLimits = { parcels: 250, buildings: 400, landUse: 150 }
 
 /**
  * Weite Abfrage für die 3D-Nachbarschaft. Eine Bounding-Box von rund 450 m
@@ -243,11 +271,33 @@ export class AlkisSource {
         this.transport.items<CadastreBuildingProps>('gebaeude_bauwerk', bbox, limits.buildings, deadline),
         this.transport.items<LandUseProps>('nutzung', bbox, limits.landUse, deadline),
       ])
+      // Abschneiden erkennen, nicht hoffen, dass es nicht passiert. Die
+      // Schnittstelle meldet mit `numberMatched`, wie viele Objekte in der Box
+      // liegen, und mit `numberReturned`, wie viele davon auf der Seite stehen.
+      // Weichen sie ab, fehlt etwas — und zwar in einer Reihenfolge, die
+      // niemand kennt.
+      const cut = (name: string, c: AlkisCollection<unknown>): string | undefined => {
+        const got = c.numberReturned ?? c.features?.length ?? 0
+        const total = c.numberMatched
+        return total !== undefined && got < total ? `${name} ${got}/${total}` : undefined
+      }
+      const truncated = [
+        cut('Flurstücke', parcels),
+        cut('Gebäude', buildings),
+        cut('Nutzung', landUse),
+      ].filter((s): s is string => s !== undefined)
+      if (truncated.length > 0) {
+        // Sichtbar, weil die Folge unsichtbar ist: die Analyse läuft weiter und
+        // sieht vollständig aus.
+        console.warn(`OMEGA Kataster: Antwort abgeschnitten — ${truncated.join(', ')}`)
+      }
+
       const site: AlkisSite = {
         parcels: parcels.features ?? [],
         buildings: buildings.features ?? [],
         landUse: landUse.features ?? [],
         version: (parcels.features?.[0]?.properties as ParcelProps | undefined)?.aktualit,
+        truncated,
       }
       if (site.parcels.length === 0 && site.buildings.length === 0) return undefined
       this.cache.set(key, { site, storedAt: Date.now() })

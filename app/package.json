@@ -13,6 +13,7 @@
     "verify:parcel": "vite-node scripts/verify-parcel.ts",
     "verify:osm": "vite-node scripts/verify-osm.ts",
     "verify:alkis": "vite-node scripts/verify-alkis.ts",
+    "verify:chain": "vite-node scripts/verify-chain.ts",
     "verify:imagery": "vite-node scripts/verify-imagery.ts",
     "verify:structures": "vite-node scripts/verify-structures.ts",
     "verify:shadow-frustum": "vite-node scripts/verify-shadow-frustum.ts",
