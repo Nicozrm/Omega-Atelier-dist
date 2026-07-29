@@ -69,6 +69,41 @@ export interface TreeSpec {
  */
 export type HouseLod = 'full' | 'simple' | 'massing'
 
+/**
+ * Wie der First zur Straße liegt.
+ *
+ * `gable` ist giebelständig — die Dreiecksseite zeigt zur Straße; `eaves` ist
+ * traufständig — die Traufe liegt straßenseitig und der First läuft parallel
+ * dazu. Das ist der stärkste einzelne Unterschied in der Silhouette einer
+ * Wohnstraße, und bisher war jedes erzeugte Haus giebelständig. Eine ganze
+ * Straße mit derselben Firstrichtung liest sich als ein Modell, das mehrfach
+ * aufgestellt wurde — genau das, was hier zu schwach war.
+ */
+export type RidgeDir = 'gable' | 'eaves'
+
+/**
+ * Ein zweiter Baukörper.
+ *
+ * Deutsche Einfamilienhäuser sind selten ein einzelnes Rechteck. Sie haben
+ * einen Winkel, einen eingeschossigen Anbau, einen zurückspringenden Flügel.
+ * Ein einzelner Quader je Haus ist deshalb nicht bloss weniger Detail, sondern
+ * die falsche Grundform — und keine Textur der Welt gleicht das aus, weil das
+ * Auge die Silhouette schon aus hundert Metern liest.
+ *
+ * Der Anbau steht immer **seitlich und zurückgesetzt**, nie vor der Fassade:
+ * so entsteht das L, und die Haustür, die Fenster und das Vordach bleiben
+ * unberührt.
+ */
+export interface HouseWing {
+  /** Mitte relativ zur Hausmitte, lokale Meter. */
+  at: Vec2
+  widthM: number
+  depthM: number
+  heightM: number
+  /** Eingeschossige Anbauten bekommen Flach- oder Pultdach, volle einen Giebel. */
+  roof: 'flat' | 'pent' | 'gable'
+}
+
 export interface HouseSpec {
   plot: Plot
   lod: HouseLod
@@ -113,6 +148,22 @@ export interface HouseSpec {
   heightM: number
   roof: RoofForm
   roofPitchDeg: number
+  /** Firstrichtung — siehe {@link RidgeDir}. */
+  ridge: RidgeDir
+  /** Zweiter Baukörper, falls das Grundstück Platz dafür lässt. */
+  wing?: HouseWing
+  /**
+   * Fensterachsen auf der Straßenfassade.
+   *
+   * Vorher zeichnete der Renderer stur zwei Fenster je Geschoss an fest
+   * einprogrammierten Stellen und eine Tür genau in der Mitte — bei jedem Haus,
+   * unabhängig von seiner Breite. Damit hatte die halbe Straße dasselbe
+   * Gesicht. Die Achszahl folgt jetzt der Hausbreite, und die Tür sitzt in
+   * einer davon statt immer mittig.
+   */
+  bays: number
+  /** In welcher Achse die Haustür sitzt, 0 … bays−1. */
+  doorBay: number
   /** Index into the style palette's facade list. */
   facadeIndex: number
   roofIndex: number
@@ -326,9 +377,66 @@ export function houseForPlot(plot: Plot, style: CityStyle, lodInput?: { centre: 
     ? 'full'
     : distanceM <= lodInput.simpleM ? 'simple' : 'massing'
 
+  /*
+   * Firstrichtung aus dem Zuschnitt, nicht aus dem Zufall.
+   *
+   * Schmale, tiefe Parzellen werden traditionell giebelständig bebaut — der
+   * schmale Giebel passt an die Straße, das Haus wächst nach hinten. Breite
+   * Parzellen bekommen die Traufe zur Straße. Das ist keine Stilfrage, sondern
+   * folgt aus dem Grundstück, und deshalb steht es hier und nicht in einer
+   * Zufallsquote.
+   */
+  const ridge: RidgeDir = rng.bool(widthM < depthM * 0.85 ? 0.66 : 0.22) ? 'gable' : 'eaves'
+
+  /*
+   * Der Anbau. Nur wenn er hinpasst: an einer Seite, an der kein Nachbar
+   * angebaut ist, und nur wenn zwischen Haus und Grundstücksgrenze genug Platz
+   * bleibt. Ein Anbau, der über die Grenze ragt, wäre schlimmer als keiner.
+   */
+  const attachedSide = attached === 'left' ? 1 : attached === 'right' ? -1 : 0
+  /*
+   * Auf welche Seite darf der Anbau?
+   *
+   * Zwei Bedingungen, und beide sind zwingend. Erstens: nicht dorthin, wo ein
+   * Nachbar angebaut ist — dort ist keine Wand frei. Zweitens: nicht auf die
+   * Seite der Garage. Die steht bei `widthM / 2 + 2.1` und reicht 3 m breit
+   * über einen guten Teil der Haustiefe; ein Anbau daneben würde sie
+   * durchdringen. Zwei Körper, die sich schneiden, sind auffälliger als ein
+   * fehlender Anbau — deshalb weicht der Anbau aus und nicht die Garage.
+   */
+  const blocked = attachedSide !== 0 ? attachedSide : (garage !== 'none' ? garageSide : 0)
+  // Beidseitig angebaut (Reihenmitte) heisst: gar keine freie Seite.
+  const freeSide: 1 | -1 | 0 = attached === 'both' ? 0
+    : blocked === 0 ? (rng.bool() ? 1 : -1)
+    : (-blocked as 1 | -1)
+  const roomBeside = plot.widthM / 2 - widthM / 2 - 0.9
+  let wing: HouseWing | undefined
+  if (freeSide !== 0 && roomBeside > 2.3 && rng.bool(0.52)) {
+    const single = stories >= 2 ? rng.bool(0.6) : true
+    const ww = Math.min(roomBeside, rng.range(2.6, 4.6))
+    const wd = depthM * rng.range(0.42, 0.76)
+    wing = {
+      // Hinten bündig mit dem Hauptbau: dadurch springt die Front des Anbaus
+      // von selbst zurück, und aus zwei Quadern wird ein Winkel statt eines
+      // breiteren Kastens.
+      at: { x: freeSide * (widthM / 2 + ww / 2 - 0.15), z: depthM / 2 - wd / 2 },
+      widthM: ww,
+      depthM: wd,
+      heightM: single ? spec.building.storeyHeightM * 1.05 : heightM,
+      roof: single ? (rng.bool(0.45) ? 'flat' : 'pent') : 'gable',
+    }
+  }
+
+  // Achsen aus der Breite: rund 2,8 m je Fensterachse ist das übliche Raster.
+  const bays = Math.max(2, Math.min(4, Math.round(widthM / 2.8)))
+
   return {
     plot, lod, distanceM, centre, frontYardM, backYardM,
-    widthM, depthM, stories, heightM, roof, roofPitchDeg,
+    widthM, depthM, stories, heightM, roof, roofPitchDeg, ridge, bays,
+    // Bei zwei Achsen sitzt die Tür in einer davon, bei drei gern in der Mitte,
+    // bei vier selten aussen — so entsteht Rhythmus statt Symmetrie.
+    doorBay: bays === 3 ? (rng.bool(0.6) ? 1 : rng.int(0, 2)) : rng.int(0, bays - 1),
+    ...(wing ? { wing } : {}),
     facadeIndex: rng.int(0, spec.palette.facades.length - 1),
     roofIndex: rng.int(0, spec.palette.roofs.length - 1),
     chimney: rng.bool(b.chimneyRatio),

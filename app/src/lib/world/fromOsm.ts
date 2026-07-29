@@ -21,7 +21,7 @@ import { cityStyleSpec, pickWeighted, type BoundaryKind, type CityStyle, type Ro
 import { SeededRng, hashInts } from '@/lib/composer/rng'
 import { orientedBounds, rotatePolygon } from '@/lib/composer/geo'
 import type { OsmBuilding, OsmPoi, OsmRoad, RoadClass } from '@/lib/composer/resolvers/osmResolver'
-import type { HouseLod, HouseSpec, Plot } from './plots'
+import type { HouseLod, HouseSpec, Plot, RidgeDir } from './plots'
 import type { Amenity, ParkSpec, StreetFurniture } from './amenities'
 import type { StreetKind, StreetNetwork, StreetNode, StreetSegment, Vec2 } from './streetNetwork'
 import { buildPedestrians, buildTraffic, buildVehicleRoutes, buildWalkRoutes } from './traffic'
@@ -188,12 +188,33 @@ export function houseFromOsmBuilding(
     seed,
   }
 
+  /*
+   * Firstrichtung aus dem vermessenen Umriss.
+   *
+   * Hier muss nichts gewürfelt werden: ein Satteldach läuft mit dem First über
+   * die **lange** Seite des Baukörpers. Das ist keine Stilvorliebe, sondern
+   * Statik — die Sparren spannen über die kurze Achse. Der Umriss aus dem
+   * Kataster kennt beide Achsen, also ist die Firstrichtung an einem
+   * vermessenen Gebäude eine abgeleitete Größe und keine Annahme.
+   *
+   * `eaves` heißt hier: der First läuft entlang x, also über die Breite. Das
+   * gilt, wenn die Breite die lange Seite ist.
+   */
+  const ridge: RidgeDir = widthM >= depthM ? 'eaves' : 'gable'
+
   return {
     plot,
     lod,
     distanceM,
     centre,
     footprint: local,
+    ridge,
+    bays: Math.max(2, Math.min(4, Math.round(widthM / 2.8))),
+    doorBay: hashInts(seed, 0x646f6f72) % Math.max(2, Math.min(4, Math.round(widthM / 2.8))),
+    // Kein erfundener Anbau: der Umriss **ist** hier schon der echte Baukörper,
+    // Winkel und Vorsprünge inbegriffen. Etwas danebenzustellen hiesse, eine
+    // Messung mit einer Erfindung zu übermalen.
+
     footprintFill: Math.round(fill * 100) / 100,
     frontYardM: 3,
     backYardM: 4,

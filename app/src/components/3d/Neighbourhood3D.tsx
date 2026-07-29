@@ -489,6 +489,24 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
   // a neighbour's shadow is visible at all.
   const casts = h.distanceM < SHADOW_RANGE_M
 
+  /*
+   * Firstrichtung.
+   *
+   * Das Dach wird immer in seinem eigenen Rahmen gebaut — Neigung über x,
+   * First entlang z — und danach als Ganzes gedreht. Das ist der Grund, warum
+   * hier `rW`/`rD` statt `W`/`D` steht: bei traufständigen Häusern spannen die
+   * Sparren über die **Tiefe**, nicht über die Breite.
+   *
+   * Vorher gab es diese Drehung nicht, und damit stand jedes einzelne Haus der
+   * Nachbarschaft giebelständig zur Straße. Eine Straße, in der jedes Dach
+   * gleich herum liegt, verrät den Generator schon aus der Ferne — noch bevor
+   * man Fassade oder Fenster überhaupt erkennen kann.
+   */
+  const eavesToStreet = h.ridge === 'eaves'
+  const rW = eavesToStreet ? D : W
+  const rD = eavesToStreet ? W : D
+  const rYaw = eavesToStreet ? Math.PI / 2 : 0
+
   // Body. Ein erfasster Umriss wird extrudiert; ohne Quelle bleibt es der
   // Quader aus Breite × Tiefe. Das ist der einzige Unterschied zwischen
   // vermessener und erfundener Nachbarschaft im gesamten Renderer.
@@ -512,17 +530,70 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
   }
   if (mid) parts.push(<mesh key="pl" position={[0, 0.16, 0]} material={m.plinth}><boxGeometry args={[W + 0.06, 0.32, D + 0.06]} /></mesh>)
 
+  /*
+   * Der zweite Baukörper.
+   *
+   * Er steht seitlich und hinten bündig, springt also vorne zurück — dadurch
+   * wird aus zwei Quadern ein Winkel und nicht bloss ein breiteres Haus. Sein
+   * Dach läuft quer zum Hauptdach, was die zweite Firstlinie ergibt, an der
+   * man ein gewachsenes Haus von einem gestellten unterscheidet.
+   *
+   * Nur bei vermessenen Umrissen entfällt er: dort ist der echte Baukörper
+   * samt seiner Winkel bereits da, und ein erfundener Anbau daneben wäre eine
+   * Erfindung auf einer Messung.
+   */
+  if (h.wing && mid && !(h.footprint && h.footprint.length >= 3)) {
+    const g = h.wing
+    const wr: React.ReactNode[] = [
+      <mesh key="wb" position={[0, g.heightM / 2, 0]} castShadow={casts} receiveShadow material={facade}>
+        <boxGeometry args={[g.widthM, g.heightM, g.depthM]} />
+      </mesh>,
+      <mesh key="wp" position={[0, 0.15, 0]} material={m.plinth}><boxGeometry args={[g.widthM + 0.06, 0.3, g.depthM + 0.06]} /></mesh>,
+    ]
+    if (g.roof === 'flat') {
+      wr.push(<mesh key="wrf" position={[0, g.heightM + 0.08, 0]} castShadow={casts} material={roofMat}><boxGeometry args={[g.widthM + 0.3, 0.16, g.depthM + 0.3]} /></mesh>)
+    } else if (g.roof === 'pent') {
+      const rise = g.widthM * 0.18
+      const a = Math.atan2(rise, g.widthM)
+      wr.push(
+        <mesh key="wrp" position={[0, g.heightM + rise / 2, 0]} rotation={[0, 0, a]} castShadow={casts} material={roofMat}>
+          <boxGeometry args={[Math.hypot(g.widthM, rise) + 0.3, 0.12, g.depthM + 0.3]} />
+        </mesh>,
+      )
+    } else {
+      // Giebel quer zum Hauptdach — die zweite Firstlinie.
+      const rh = Math.min(g.widthM, g.depthM) * 0.5
+      const sl = Math.hypot(g.widthM / 2 + 0.35, rh)
+      const a = Math.atan2(rh, g.widthM / 2 + 0.35)
+      wr.push(
+        <group key="wrg" position={[0, g.heightM, 0]} rotation={[0, Math.PI / 2, 0]}>
+          <mesh position={[-g.depthM / 4, rh / 2, 0]} rotation={[0, 0, a]} castShadow={casts} material={roofMat}><boxGeometry args={[sl, 0.1, g.widthM + 0.6]} /></mesh>
+          <mesh position={[g.depthM / 4, rh / 2, 0]} rotation={[0, 0, -a]} castShadow={casts} material={roofMat}><boxGeometry args={[sl, 0.1, g.widthM + 0.6]} /></mesh>
+          <mesh position={[0, rh + 0.02, 0]} material={m.ridge}><boxGeometry args={[0.22, 0.1, g.widthM + 0.62]} /></mesh>
+        </group>,
+      )
+    }
+    if (detail) {
+      // Ein Fenster zur Straße, damit der Anbau bewohnt aussieht und nicht wie
+      // ein angestellter Schuppen.
+      wr.push(windowUnit('wgw', 0, g.heightM * 0.52, front * (g.depthM / 2 + 0.03), Math.min(1.5, g.widthM * 0.45), 1.1, front, m.glassDim, mats, detail))
+    }
+    parts.push(<group key="wg" position={[g.at.x, 0, g.at.z]}>{wr}</group>)
+  }
+
   // Roof
   if (h.roof === 'flat') {
     parts.push(<mesh key="rf" position={[0, H + 0.09, 0]} castShadow={casts} material={roofMat}><boxGeometry args={[W + 0.24, 0.18, D + 0.24]} /></mesh>)
     if (detail) parts.push(<mesh key="rfg" position={[0, H + 0.185, 0]} rotation={[-Math.PI / 2, 0, 0]} material={m.gravel}><planeGeometry args={[W + 0.06, D + 0.06]} /></mesh>)
   } else if (h.roof === 'pent') {
-    const rise = Math.tan((h.roofPitchDeg * Math.PI) / 180) * D
-    const ang = Math.atan2(rise, D)
+    const rise = Math.tan((h.roofPitchDeg * Math.PI) / 180) * rD
+    const ang = Math.atan2(rise, rD)
     parts.push(
-      <mesh key="rp" position={[0, H + rise / 2, 0]} rotation={[-ang, 0, 0]} castShadow={casts} material={roofMat}>
-        <boxGeometry args={[W + 0.3, 0.12, Math.hypot(D, rise) + 0.3]} />
-      </mesh>,
+      <group key="rp" position={[0, 0, 0]} rotation={[0, rYaw, 0]}>
+        <mesh position={[0, H + rise / 2, 0]} rotation={[-ang, 0, 0]} castShadow={casts} material={roofMat}>
+          <boxGeometry args={[rW + 0.3, 0.12, Math.hypot(rD, rise) + 0.3]} />
+        </mesh>
+      </group>,
     )
   } else if (h.roof === 'hip') {
     const rh = Math.min(W, D) * 0.4
@@ -534,36 +605,57 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
   } else {
     // Gable (and mansard, drawn as a steeper gable) — two slopes plus a ridge
     // cap, with the triangular gable ends filled by the facade material.
-    const rh = Math.min(W, D) * (h.roof === 'mansard' ? 0.58 : 0.5)
-    const slope = Math.hypot(W / 2 + 0.16, rh)
-    const ang = Math.atan2(rh, W / 2 + 0.16)
+    // Der Dachüberstand ist kein Detail, sondern die Kante, die man am
+    // weitesten sieht. 0,45 m Traufe und 0,35 m Ortgang sind der übliche
+    // deutsche Zuschnitt; vorher waren es 0,16 bzw. 0,25, und dadurch sass das
+    // Dach auf dem Mauerwerk auf wie ein Deckel auf einer Schachtel.
+    const OVH = 0.45, VRG = 0.35
+    const rh = Math.min(rW, rD) * (h.roof === 'mansard' ? 0.58 : 0.5)
+    const slope = Math.hypot(rW / 2 + OVH, rh)
+    const ang = Math.atan2(rh, rW / 2 + OVH)
     parts.push(
-      <group key="rg" position={[0, H, 0]}>
-        <mesh position={[-W / 4, rh / 2, 0]} rotation={[0, 0, ang]} castShadow={casts} material={roofMat}><boxGeometry args={[slope, 0.1, D + 0.5]} /></mesh>
-        <mesh position={[W / 4, rh / 2, 0]} rotation={[0, 0, -ang]} castShadow={casts} material={roofMat}><boxGeometry args={[slope, 0.1, D + 0.5]} /></mesh>
-        <mesh position={[0, rh + 0.02, 0]} castShadow={casts} material={m.ridge}><boxGeometry args={[0.24, 0.1, D + 0.55]} /></mesh>
+      <group key="rg" position={[0, H, 0]} rotation={[0, rYaw, 0]}>
+        <mesh position={[-rW / 4, rh / 2, 0]} rotation={[0, 0, ang]} castShadow={casts} material={roofMat}><boxGeometry args={[slope, 0.1, rD + VRG * 2]} /></mesh>
+        <mesh position={[rW / 4, rh / 2, 0]} rotation={[0, 0, -ang]} castShadow={casts} material={roofMat}><boxGeometry args={[slope, 0.1, rD + VRG * 2]} /></mesh>
+        <mesh position={[0, rh + 0.02, 0]} castShadow={casts} material={m.ridge}><boxGeometry args={[0.24, 0.1, rD + VRG * 2 + 0.05]} /></mesh>
         {[-1, 1].map((s) => {
           const sh = new THREE.Shape()
-          sh.moveTo(-W / 2, 0); sh.lineTo(W / 2, 0); sh.lineTo(0, rh); sh.closePath()
-          return <mesh key={s} position={[0, 0, (s * D) / 2]} material={facade}><shapeGeometry args={[sh]} /></mesh>
+          sh.moveTo(-rW / 2, 0); sh.lineTo(rW / 2, 0); sh.lineTo(0, rh); sh.closePath()
+          return <mesh key={s} position={[0, 0, (s * rD) / 2]} material={facade}><shapeGeometry args={[sh]} /></mesh>
         })}
+        {/* Ortgangbrett am Giebel — der helle Streifen, der die Dachkante gegen
+            den Himmel absetzt. Ohne ihn verschmilzt das dunkle Dach mit dem
+            dunklen Giebeldreieck zu einer Fläche. */}
+        {detail && [-1, 1].map((sz) => [-1, 1].map((sx) => (
+          <mesh
+            key={`vg${sz}${sx}`}
+            position={[sx * (rW / 4), rh / 2, (sz * (rD + VRG * 2)) / 2]}
+            rotation={[0, 0, sx < 0 ? ang : -ang]}
+            material={m.trim}
+          >
+            <boxGeometry args={[slope, 0.16, 0.05]} />
+          </mesh>
+        )))}
         {/* Zinc gutters along both eaves plus a downpipe to the plinth. */}
         {detail && [-1, 1].map((s) => (
           <group key={`gt${s}`}>
-            <mesh position={[s * (W / 2 + 0.22), 0.03, 0]} rotation={[Math.PI / 2, 0, 0]} material={m.metal}><cylinderGeometry args={[0.055, 0.055, D + 0.5, 8]} /></mesh>
-            <mesh position={[s * (W / 2 + 0.24), -H / 2 + 0.02, D * 0.32]} material={m.metal}><cylinderGeometry args={[0.04, 0.04, H, 8]} /></mesh>
+            <mesh position={[s * (rW / 2 + OVH - 0.06), -0.06, 0]} rotation={[Math.PI / 2, 0, 0]} material={m.metal}><cylinderGeometry args={[0.055, 0.055, rD + VRG * 2, 8]} /></mesh>
+            <mesh position={[s * (rW / 2 + OVH - 0.04), -H / 2, rD * 0.34]} material={m.metal}><cylinderGeometry args={[0.04, 0.04, H, 8]} /></mesh>
           </group>
         ))}
         {h.solar && (
-          <group position={[-W / 4, rh / 2 + 0.07, front * D * 0.1]} rotation={[0, 0, ang]}>
-            <mesh castShadow={casts} material={m.solarFrame}><boxGeometry args={[slope * 0.74, 0.05, D * 0.52]} /></mesh>
-            <mesh position={[0, 0.035, 0]} material={m.solar}><boxGeometry args={[slope * 0.7, 0.02, D * 0.48]} /></mesh>
+          <group position={[-rW / 4, rh / 2 + 0.07, 0]} rotation={[0, 0, ang]}>
+            <mesh castShadow={casts} material={m.solarFrame}><boxGeometry args={[slope * 0.74, 0.05, rD * 0.52]} /></mesh>
+            <mesh position={[0, 0.035, 0]} material={m.solar}><boxGeometry args={[slope * 0.7, 0.02, rD * 0.48]} /></mesh>
           </group>
         )}
+        {/* Gaube: liegt auf der Dachfläche und ist mitgeneigt, statt als
+            aufrechter Kasten hindurchzustossen. */}
         {h.dormer && detail && (
-          <group position={[W / 4, rh * 0.42, front * D * 0.26]}>
-            <mesh castShadow={casts} material={m.metal}><boxGeometry args={[W * 0.22, 0.95, 0.55]} /></mesh>
-            <mesh position={[0, 0, front * 0.28]} material={m.glassDim}><boxGeometry args={[W * 0.16, 0.62, 0.05]} /></mesh>
+          <group position={[rW * 0.26, rh * 0.46, -rD * 0.18]}>
+            <mesh castShadow={casts} material={facade}><boxGeometry args={[rW * 0.2, 1.0, 1.5]} /></mesh>
+            <mesh position={[0, 0.58, 0]} castShadow={casts} material={roofMat}><boxGeometry args={[rW * 0.2 + 0.22, 0.1, 1.7]} /></mesh>
+            <mesh position={[rW * 0.1 + 0.02, 0.05, 0]} rotation={[0, Math.PI / 2, 0]} material={m.glassDim}><boxGeometry args={[1.0, 0.68, 0.05]} /></mesh>
           </group>
         )}
       </group>,
@@ -575,16 +667,48 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
     parts.push(<mesh key="chc" position={[W * 0.25, H + 1.47, D * 0.1]} material={m.dark}><boxGeometry args={[0.4, 0.06, 0.4]} /></mesh>)
   }
 
+  // Achsraster der Straßenfassade. Steht ausserhalb des Detailblocks, weil auch
+  // der Gartenweg wissen muss, wo die Tür sitzt — ein Weg, der neben der Tür
+  // endet, fällt sofort auf.
+  const bays = Math.max(2, h.bays)
+  const step = W / bays
+  const bayX = (i: number) => -W / 2 + step * (i + 0.5)
+  const doorBay = Math.min(bays - 1, Math.max(0, h.doorBay))
+  const doorX = bayX(doorBay)
+
   if (mid) {
     // Windows: a pair per storey on the street face, one on the gable flank.
     const pick = (i: number) => {
       const t = ((h.windowSeed >>> (i * 3)) & 7) / 8
       return t < 0.4 ? m.glassLit : t < 0.68 ? m.glassDim : m.glassDark
     }
+    /*
+     * Fensterachsen statt zweier fester Fenster.
+     *
+     * Vorher standen auf jeder Straßenfassade genau zwei Fenster, an
+     * einprogrammierten Stellen (−0,24 W und +0,26 W), in jeder Etage gleich
+     * breit und gleich hoch, und die Tür immer exakt mittig. Ein 7-m-Haus und
+     * ein 12-m-Haus bekamen dieselbe Aufteilung, nur gestreckt. Genau dieses
+     * wiederholte Gesicht ist der Grund, warum eine erzeugte Straße erzeugt
+     * aussieht — mehr noch als Farbe oder Textur.
+     *
+     * Jetzt bestimmt die Breite die Zahl der Achsen, die Tür belegt eine davon,
+     * und das Erdgeschoss bekommt die hohen Fenster, die es in Wirklichkeit
+     * hat (Wohnraum unten, Schlafraum oben).
+     */
     for (let s = 0; s < h.stories; s++) {
       const y = 1.25 + s * spec.building.storeyHeightM
-      parts.push(windowUnit(`wa${s}`, -W * 0.24, y, front * (D / 2 + 0.03), W * 0.28, 1.15, front, pick(s * 2), mats, detail))
-      parts.push(windowUnit(`wb${s}`, W * 0.26, y, front * (D / 2 + 0.03), W * 0.24, 1.15, front, pick(s * 2 + 1), mats, detail))
+      // Erdgeschossfenster reichen tiefer und sind breiter — der Wohnraum.
+      const wh = s === 0 ? 1.5 : 1.15
+      const wy = s === 0 ? y + 0.12 : y
+      for (let i = 0; i < bays; i++) {
+        // Die Türachse bleibt im Erdgeschoss frei.
+        if (s === 0 && i === doorBay) continue
+        parts.push(windowUnit(
+          `wf${s}-${i}`, bayX(i), wy, front * (D / 2 + 0.03),
+          Math.min(2.0, step * 0.58), wh, front, pick(s * 4 + i), mats, detail,
+        ))
+      }
       if (h.attached !== 'right' && h.attached !== 'both') {
         parts.push(
           <group key={`ws${s}`} position={[W / 2 + 0.03, y, 0]} rotation={[0, Math.PI / 2, 0]}>
@@ -597,12 +721,12 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
 
     // Front door with a reveal, a step, a canopy and a warm wall light.
     const dz = front * (D / 2)
-    parts.push(<mesh key="drf" position={[0, 1.12, dz + front * 0.02]} material={m.trim}><boxGeometry args={[1.2, 2.3, 0.08]} /></mesh>)
-    parts.push(<mesh key="dr" position={[0, 1.05, dz + front * 0.06]} castShadow={casts} material={m.door}><boxGeometry args={[0.95, 2.1, 0.08]} /></mesh>)
+    parts.push(<mesh key="drf" position={[doorX, 1.12, dz + front * 0.02]} material={m.trim}><boxGeometry args={[1.2, 2.3, 0.08]} /></mesh>)
+    parts.push(<mesh key="dr" position={[doorX, 1.05, dz + front * 0.06]} castShadow={casts} material={m.door}><boxGeometry args={[0.95, 2.1, 0.08]} /></mesh>)
     if (detail) {
-      parts.push(<mesh key="stp" position={[0, 0.05, dz + front * 0.35]} material={m.walk}><boxGeometry args={[1.3, 0.1, 0.55]} /></mesh>)
-      parts.push(<mesh key="cn" position={[0, 2.35, dz + front * 0.35]} castShadow={casts} material={m.dark}><boxGeometry args={[1.6, 0.08, 0.75]} /></mesh>)
-      parts.push(<mesh key="sc" position={[0.82, 1.95, dz + front * 0.08]} material={m.sconce}><boxGeometry args={[0.09, 0.22, 0.09]} /></mesh>)
+      parts.push(<mesh key="stp" position={[doorX, 0.05, dz + front * 0.35]} material={m.walk}><boxGeometry args={[1.3, 0.1, 0.55]} /></mesh>)
+      parts.push(<mesh key="cn" position={[doorX, 2.35, dz + front * 0.35]} castShadow={casts} material={m.dark}><boxGeometry args={[1.6, 0.08, 0.75]} /></mesh>)
+      parts.push(<mesh key="sc" position={[doorX + 0.82, 1.95, dz + front * 0.08]} material={m.sconce}><boxGeometry args={[0.09, 0.22, 0.09]} /></mesh>)
     }
   }
 
@@ -656,7 +780,7 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
   )
   if (mid && ground) {
     parts.push(
-      <mesh key="pa" position={[0, 0.006, front * (D / 2 + frontLen / 2)]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.walk}>
+      <mesh key="pa" position={[doorX, 0.006, front * (D / 2 + frontLen / 2)]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={m.walk}>
         <planeGeometry args={[1.2, frontLen]} />
       </mesh>,
     )

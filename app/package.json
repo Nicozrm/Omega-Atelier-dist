@@ -14,6 +14,8 @@
     "verify:osm": "vite-node scripts/verify-osm.ts",
     "verify:alkis": "vite-node scripts/verify-alkis.ts",
     "verify:chain": "vite-node scripts/verify-chain.ts",
+    "verify:sky": "vite-node scripts/verify-sky.ts",
+    "verify:massing": "vite-node scripts/verify-massing.ts",
     "verify:imagery": "vite-node scripts/verify-imagery.ts",
     "verify:structures": "vite-node scripts/verify-structures.ts",
     "verify:shadow-frustum": "vite-node scripts/verify-shadow-frustum.ts",
