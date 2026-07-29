@@ -121,8 +121,25 @@ const SKY_DAY_ZENITH = '#6f9fd0'
 const SKY_DAY_HORIZON = '#cfe0ec'
 // Near-neutral night sky — the archviz reference floats the lit model on a
 // near-black backdrop; a strong blue cast reads as "video game night".
-const SKY_NIGHT_ZENITH = '#080a11'
-const SKY_NIGHT_HORIZON = '#131722'
+/*
+ * Nachthimmel.
+ *
+ * Vorher `#080a11` und `#131722` — also RGB 8/10/17 und 19/23/34. Solange der
+ * Himmel nur ein CSS-Verlauf hinter einem undurchsichtigen Canvas war, hat das
+ * niemanden gestört, weil er ohnehin nicht zu sehen war. Seit er als Kuppel in
+ * der Szene steht, ist er das Erste, was man nachts sieht — und bei diesen
+ * Werten ist er auf jedem Bildschirm schlicht Schwarz. Damit fehlt die
+ * Horizontlinie, und ohne Horizont hat eine Nachtszene keine Tiefe: die
+ * Dächer stehen vor nichts.
+ *
+ * Ein realer Nachthimmel ist nie schwarz. Selbst ohne Mond hebt ihn das
+ * Streulicht der Umgebung deutlich über Null, und über einem Wohngebiet kommt
+ * die Aufhellung der Ortschaft dazu. Die neuen Werte bleiben tief — es ist
+ * unmissverständlich Nacht —, geben dem Auge aber eine Kante zum Anhalten und
+ * den Fenstern etwas zu spiegeln.
+ */
+const SKY_NIGHT_ZENITH = '#121a2e'
+const SKY_NIGHT_HORIZON = '#26314a'
 const SKY_GOLDEN_HORIZON = '#e8a25c'
 
 function cloudinessFor(w: Weather): number {
@@ -161,16 +178,30 @@ function phaseFor(elevationDeg: number, hour: number): DayPhase {
  * The tuned brightness *plateaus* are preserved exactly — deep night 0.07,
  * golden hour 0.62, full day 1.0 — so a settled time of day looks identical to
  * before. Only the three narrow bands *between* plateaus are smoothed
- * (smoothstep, C¹), turning each former pop into a seamless dissolve. The 0.07
- * night floor keeps the estate legible in the dark instead of crushing it to
- * pure black.
+ * (smoothstep, C¹), turning each former pop into a seamless dissolve. Der
+ * Nachtboden hält die Siedlung im Dunkeln lesbar, statt sie auf Schwarz zu
+ * quetschen — siehe die Begründung am Wert selbst.
  */
 export function exteriorLightScale(elevationDeg: number): number {
   const smooth = (e0: number, e1: number, x: number) => {
     const t = clamp01((x - e0) / (e1 - e0))
     return t * t * (3 - 2 * t)
   }
-  const NIGHT = 0.07, TWILIGHT = 0.32, GOLDEN = 0.62, DAY = 1.0
+  /*
+   * Der Nachtwert war 0,07 — die Albedo jeder Aussenfläche also auf sieben
+   * Prozent gestaucht. Eine weisse Wand (Albedo 0,8) landet damit bei 0,056 und
+   * wird, mit dem ohnehin gedämpften Umgebungslicht multipliziert, ununter-
+   * scheidbar von Schwarz. Der Kommentar oben behauptet, 0,07 halte die
+   * Siedlung „legible in the dark"; im Bild tut er das nicht.
+   *
+   * Der eigentliche Grund für das Einbrechen ist, dass hier **die Albedo**
+   * gedimmt wird und nicht das Licht. Eine Kamera öffnet nachts die Blende;
+   * diese Szene rechnet stattdessen die Oberflächen dunkel, und das lässt sich
+   * durch keine Belichtung mehr zurückholen. 0,18 ist der Kompromiss, der die
+   * Silhouetten wieder zeigt, ohne die Nacht zum Abend zu machen — die
+   * Verhältnisse zwischen Tag und Nacht bleiben mit gut 1 : 5 deutlich.
+   */
+  const NIGHT = 0.18, TWILIGHT = 0.32, GOLDEN = 0.62, DAY = 1.0
   return (
     NIGHT +
     (TWILIGHT - NIGHT) * smooth(-6, 0, elevationDeg) + // night → twilight

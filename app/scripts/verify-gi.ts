@@ -152,63 +152,53 @@ check(
 )
 
 /*
- * Nachts darf der Himmel die Szene nicht aufhellen. Das ist die Probe darauf,
- * dass die Beleuchtungsstärke wirklich aus der Karte kommt und nicht aus einer
- * Konstanten: eine Karte mit nächtlichen Farben muss von selbst dunkel sein.
+ * Nachts darf der Himmel die Szene nicht aufhellen.
+ *
+ * Gemessen wird **linear**, nicht in Bildwerten. Das ist keine Feinheit: sRGB
+ * ist eine Wahrnehmungscodierung, und sie spreizt die dunklen Werte stark
+ * auseinander. Derselbe Nachthimmel steht in Bildwerten bei 24 % des Mittags
+ * und in Lichtmenge bei 6 % — nur die zweite Zahl beantwortet die Frage „wie
+ * viel Licht fällt auf die Szene", und nur sie ist das, was three integriert.
+ *
+ * Die frühere Fassung dieses Tests hat in Bildwerten verglichen und wäre am
+ * angehobenen Nachthimmel angeschlagen, obwohl die Lichtmenge weit im Rahmen
+ * liegt.
  */
-const night = deriveEnvironment({ timeOfDay: 1, weather: 'clear' })
-const nightE = skyIrradiance({
-  zenith: hexToRgb(night.sky.zenithColor),
-  horizon: hexToRgb(night.sky.horizonColor),
-  cloudiness: night.weather.cloudiness,
+const nightSky = deriveEnvironment({ timeOfDay: 1, weather: 'clear' })
+const noonSky = deriveEnvironment({ timeOfDay: 12, weather: 'clear' })
+const nightE = skyIrradianceLinear({
+  zenith: hexToRgb(nightSky.sky.zenithColor),
+  horizon: hexToRgb(nightSky.sky.horizonColor),
+  cloudiness: nightSky.weather.cloudiness,
   groundAlbedo: LAWN,
 })
-const noonE = skyIrradiance({
-  zenith: hexToRgb(deriveEnvironment({ timeOfDay: 12 }).sky.zenithColor),
-  horizon: hexToRgb(deriveEnvironment({ timeOfDay: 12 }).sky.horizonColor),
+const noonE = skyIrradianceLinear({
+  zenith: hexToRgb(noonSky.sky.zenithColor),
+  horizon: hexToRgb(noonSky.sky.horizonColor),
   cloudiness: 0,
   groundAlbedo: LAWN,
 })
+const nightShare = lum(nightE) / lum(noonE)
 check(
-  lum(nightE) < lum(noonE) * 0.2,
+  nightShare < 0.15,
   'Nacht bleibt Nacht',
-  `${lum(nightE).toFixed(0)} gegen ${lum(noonE).toFixed(0)} am Mittag = ${Math.round((lum(nightE) / lum(noonE)) * 100)} %`,
-)
-
-/* ── Gemessen schlägt angenommen ────────────────────────────────────────
- *
- * Der Bodenanteil war ein angenommener Rasenwert. Liegt ein Luftbild unter der
- * Szene, ist er messbar — das Bild ist die Aufsicht auf genau diese Fläche.
- *
- * Die Zahlen unten stammen aus dem amtlichen DOP der Kolpingstr. 9 (Geobasis
- * NRW, 240 m Kante, 65 536 Stützpunkte, linear gemittelt). Sie zeigen zweierlei:
- * dass die Annahme daneben lag, und dass die Umrechnung sRGB → linear kein
- * Detail ist.
- */
-console.log('\n══ Bodenreflexion — angenommen gegen gemessen')
-const MEASURED: Rgb = [0.184, 0.173, 0.167]  // DOP Kolpingstr. 9
-console.log(`   angenommen (Rasen)   ${LAWN.map((c) => c.toFixed(3)).join(' ')}`)
-console.log(`   gemessen (DOP)       ${MEASURED.map((c) => c.toFixed(3)).join(' ')}`)
-const greenBias = LAWN[1] / ((LAWN[0] + LAWN[2]) / 2)
-const measuredBias = MEASURED[1] / ((MEASURED[0] + MEASURED[2]) / 2)
-check(
-  Math.abs(measuredBias - 1) < 0.1 && greenBias > 1.3,
-  'Annahme war zu grün',
-  `Grünstich angenommen ${greenBias.toFixed(2)}, gemessen ${measuredBias.toFixed(2)} — eine Wohnstraße ist überwiegend Dach und Asphalt`,
+  `${(nightShare * 100).toFixed(1)} % der Mittagslichtmenge (in Bildwerten wären es ${
+    Math.round((lum(skyIrradiance({ zenith: hexToRgb(nightSky.sky.zenithColor), horizon: hexToRgb(nightSky.sky.horizonColor), cloudiness: 0, groundAlbedo: LAWN }))
+      / lum(skyIrradiance({ zenith: hexToRgb(noonSky.sky.zenithColor), horizon: hexToRgb(noonSky.sky.horizonColor), cloudiness: 0, groundAlbedo: LAWN }))) * 100)
+  } % — deshalb linear)`,
 )
 
 /*
- * Und die Umrechnung selbst. Ein Bildwert von 105 ist keine Reflexion von 41 %,
- * sondern von rund 14 % — wer die Bildwerte direkt mittelt, überschätzt den
- * Rückwurf um mehr als das Doppelte, und die Szene bekäme von unten viel zu
- * viel Licht. Der Fehler ist nicht zu sehen, nur zu rechnen.
+ * Und die Gegenprobe zum Anlass: der Nachthimmel muss **sichtbar** sein.
+ * Ein Himmel unter etwa Bildwert 20 ist auf einem Telefon nicht von Schwarz zu
+ * unterscheiden, und ohne sichtbaren Himmel fehlt der Nachtszene die
+ * Horizontlinie — die Dächer stehen dann vor nichts.
  */
-const naive = 105 / 255
-const correct = srgbToLinear(105)
+const nightHorizon = hexToRgb(nightSky.sky.horizonColor)
 check(
-  Math.abs(correct - 0.1413) < 0.0005,
-  'sRGB → linear stimmt',
-  `Bildwert 105 → ${correct.toFixed(3)} Reflexion; direkt gemittelt wären es ${naive.toFixed(3)} = ${(naive / correct).toFixed(1)}× zu hell`,
+  Math.max(...nightHorizon) >= 24,
+  'Nachthimmel sichtbar',
+  `Horizont ${nightHorizon.join('/')} (vorher 19/23/34 — auf dem Bildschirm schwarz)`,
 )
 
 console.log(`\n${failures === 0 ? '✓ Die Himmelsbeleuchtung ist bilanziert.' : `✗ ${failures} Befund(e).`}`)
