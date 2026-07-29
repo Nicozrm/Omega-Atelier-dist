@@ -87,7 +87,25 @@ function heightToNormal(heightCanvas: HTMLCanvasElement, strength = 1.0): HTMLCa
  * one extra texture sample (not per-light, so cheap). `variation` ∈ 0..1 sets
  * the depth of the effect.
  */
-function heightToRoughness(heightCanvas: HTMLCanvasElement, variation = 0.2): HTMLCanvasElement {
+/**
+ * Höhenkarte → Rauheitskarte.
+ *
+ * `normalise` streckt den Wertebereich der Vorlage vorher auf 0…1.
+ *
+ * Das ist notwendig, sobald die Vorlage keine echte Höhenkarte ist, sondern
+ * die **Farbkarte** — was hier für mehrere Stoffe der Fall ist, weil ihre
+ * Luminanz der Webstruktur folgt. Ohne Streckung bekommt ein dunkles Material
+ * fast keine Rauheitsvariation: schwarzes Leder liegt bei Luminanz 0,15, der
+ * abgeleitete Bereich wäre 0,97…1,0 und damit praktisch konstant. Genau das
+ * Material, das von wechselndem Glanz am meisten lebt — die Ledernarbe ist in
+ * der Tiefe matt und auf der Erhebung satiniert —, bekäme also am wenigsten.
+ * Mit Streckung zählt die Struktur und nicht die Grundhelligkeit.
+ */
+function heightToRoughness(
+  heightCanvas: HTMLCanvasElement,
+  variation = 0.2,
+  normalise = false,
+): HTMLCanvasElement {
   const w = heightCanvas.width, h = heightCanvas.height
   const src = heightCanvas.getContext('2d')!.getImageData(0, 0, w, h)
   const out = makeCanvas(w)
@@ -95,8 +113,22 @@ function heightToRoughness(heightCanvas: HTMLCanvasElement, variation = 0.2): HT
   const dstCtx = out.getContext('2d')!
   const dst = dstCtx.createImageData(w, h)
   const k = Math.max(0, Math.min(1, variation))
+
+  let lo = 0, span = 255
+  if (normalise) {
+    let min = 255, max = 0
+    for (let p = 0; p < w * h; p++) {
+      const v = src.data[p * 4]
+      if (v < min) min = v
+      if (v > max) max = v
+    }
+    // Unter acht Stufen Unterschied ist die Vorlage strukturlos; strecken würde
+    // dann nur das Rauschen der Zeichenroutine verstärken.
+    if (max - min >= 8) { lo = min; span = max - min }
+  }
+
   for (let p = 0; p < w * h; p++) {
-    const height = src.data[p * 4] / 255
+    const height = Math.max(0, Math.min(1, (src.data[p * 4] - lo) / span))
     const g = Math.round((1 - k * height) * 255)
     const i = p * 4
     dst.data[i] = dst.data[i + 1] = dst.data[i + 2] = g
@@ -984,6 +1016,15 @@ export interface TextureBundle {
   // breakup of specular/reflection. Linear data, sampled once per fragment.
   parquetR: HTMLCanvasElement
   woodOakR: HTMLCanvasElement
+  // Weiche Oberflächen — der Schimmer eines Gewebes lebt vom Wechsel.
+  fabricBeigeR: HTMLCanvasElement
+  fabricGrayR: HTMLCanvasElement
+  fabricBlueR: HTMLCanvasElement
+  leatherBlackR: HTMLCanvasElement
+  linenWhiteR: HTMLCanvasElement
+  beddingR: HTMLCanvasElement
+  rugWoolR: HTMLCanvasElement
+  marbleN: HTMLCanvasElement
   woodWalnutR: HTMLCanvasElement
   plasterR: HTMLCanvasElement
   slateR: HTMLCanvasElement
@@ -1004,7 +1045,7 @@ let _bundle: TextureBundle | null = null
 
 const DB_NAME = 'omega-textures'
 const DB_STORE = 'tex'
-const CACHE_VERSION = 26
+const CACHE_VERSION = 27
 
 function openDB(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
@@ -1093,6 +1134,8 @@ async function tryLoadFromCache(): Promise<boolean> {
     'slateC', 'slateN',
     'matteWhiteC', 'matteBlackC',
     'parquetR', 'woodOakR', 'woodWalnutR', 'plasterR', 'slateR', 'vinylLightR', 'vinylDarkR',
+    'fabricBeigeR', 'fabricGrayR', 'fabricBlueR', 'leatherBlackR', 'linenWhiteR', 'beddingR',
+    'rugWoolR', 'marbleN',
   ]
   const partial: Partial<TextureBundle> = {}
   for (const k of keys) {
@@ -1166,8 +1209,38 @@ export function getTextures(): TextureBundle {
   const beddingC     = drawLinen('#e8dfca', 12)
   const beddingN     = heightToNormal(beddingC, 0.4)
 
+  /*
+   * Rauheit für die weichen Oberflächen.
+   *
+   * Bis hierher hatten Böden, Wände und Metalle eine Rauheitskarte — Polster,
+   * Leder, Leinen und Teppich dagegen **keine einzige**. Sie standen auf einer
+   * festen Zahl (Stoff 0.95, Leder 0.55) über die ganze Fläche.
+   *
+   * Ausgerechnet bei Textilien ist das der auffälligste Fehler, den ein
+   * Material haben kann: ein Gewebe besteht aus Kett- und Schussfäden, die das
+   * Licht unterschiedlich brechen, und dieser wechselnde Schimmer ist das,
+   * woran das Auge Stoff von lackiertem Kunststoff unterscheidet. `sheen` allein
+   * — das gab es schon — setzt nur den Saum bei streifendem Licht; die Fläche
+   * dazwischen blieb gleichmässig.
+   *
+   * Die Werte sind nach Materialverhalten gestaffelt: Wollteppich schwankt am
+   * stärksten (langer Flor, tiefe Schatten), Leinen am wenigsten (glatt
+   * gewebt), Leder liegt dazwischen, aber mit dem grössten Sprung zwischen
+   * Narbe und Tiefe.
+   */
+  const fabricBeigeR  = heightToRoughness(fabricBeigeH, 0.24)
+  const fabricGrayR   = heightToRoughness(fabricGrayC, 0.22, true)
+  const fabricBlueR   = heightToRoughness(fabricBlueC, 0.22, true)
+  const leatherBlackR = heightToRoughness(leatherBlackC, 0.34, true)
+  const linenWhiteR   = heightToRoughness(linenWhiteC, 0.16, true)
+  const beddingR      = heightToRoughness(beddingC, 0.18, true)
+
   const marbleC      = drawMarble(13)
   const marbleR      = heightToRoughness(marbleC, 0.18)
+  // Marmor hatte eine Rauheits-, aber keine Normalkarte. Auch polierter Stein
+  // ist nicht spiegelglatt: die Adern liegen minimal tiefer als der Grundstein,
+  // weil sie weicher sind und beim Schleifen stärker abtragen.
+  const marbleN      = heightToNormal(marbleC, 0.25)
 
   const steelC       = drawBrushedMetal('#bdbcb6', 17)
   const steelH       = drawBrushedMetalHeight(17)
@@ -1196,6 +1269,7 @@ export function getTextures(): TextureBundle {
   )
   const rugWoolH     = drawRugWoolHeight(41)
   const rugWoolN     = heightToNormal(rugWoolH, 1.2)
+  const rugWoolR     = heightToRoughness(rugWoolH, 0.38)
 
   // Wall — keep legacy, add textured plaster + concrete + wallpaper
   const wallC        = drawWallPlaster(31)
@@ -1248,6 +1322,7 @@ export function getTextures(): TextureBundle {
     woodOakC, woodOakN,
     woodWalnutC, woodWalnutN,
     fabricBeigeC, fabricBeigeN,
+    fabricBeigeR, fabricGrayR, fabricBlueR, leatherBlackR, linenWhiteR, beddingR, rugWoolR, marbleN,
     fabricGrayC, fabricGrayN,
     fabricBlueC, fabricBlueN,
     leatherBlackC, leatherBlackN,

@@ -84,6 +84,7 @@ import { precipParams, seedField, advanceField, seasonalPrecip, PRECIP_LABEL, ty
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import {
   brickTextures, boardTextures, roofTextures, asphaltTexture, paverTextures,
+  normalFromHeight, roughFromHeight,
   grassTexture, nightCityTexture, mkTex, texRnd,
 } from '@/lib/proceduralTextures'
 import { Static, BATCH_MIN, batchStatic } from './Static'
@@ -346,7 +347,11 @@ function buildMaterials(): MatCache {
     fabric: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.fabricBeigeC, [3, 2]),
       normalMap: makeTex(T.fabricBeigeN, [3, 2], false),
+      ...rough(T.fabricBeigeR, [3, 2]),
       normalScale: new THREE.Vector2(0.3, 0.3),
+      // roughness bleibt der Skalar, mit dem three die Karte multipliziert —
+      // die Karte liefert den Wechsel zwischen Kett- und Schussfaden, die Zahl
+      // die Höhe des Bereichs.
       roughness: 0.95,
       metalness: 0.0,
       sheen: 1.0,
@@ -356,6 +361,7 @@ function buildMaterials(): MatCache {
     fabricGray: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.fabricGrayC, [3, 2]),
       normalMap: makeTex(T.fabricGrayN, [3, 2], false),
+      ...rough(T.fabricGrayR, [3, 2]),
       normalScale: new THREE.Vector2(0.3, 0.3),
       roughness: 0.95,
       metalness: 0.0,
@@ -366,6 +372,7 @@ function buildMaterials(): MatCache {
     fabricBlue: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.fabricBlueC, [3, 2]),
       normalMap: makeTex(T.fabricBlueN, [3, 2], false),
+      ...rough(T.fabricBlueR, [3, 2]),
       normalScale: new THREE.Vector2(0.3, 0.3),
       roughness: 0.95,
       metalness: 0.0,
@@ -373,17 +380,28 @@ function buildMaterials(): MatCache {
       sheenRoughness: 0.9,
       sheenColor: '#bfccdc',
     }),
-    leatherBlack: new THREE.MeshStandardMaterial({
+    /*
+      * Leder ist zweischichtig wie Autolack: pigmentierte Narbe unter einer
+      * dünnen Zurichtung. Deshalb `clearcoat` statt `metalness` — Leder ist
+      * kein Metall, und ein Metallanteil von 0,10 verschluckte bisher einen
+      * Teil der diffusen Farbe, statt Glanz hinzuzufügen. Die Rauheitskarte
+      * trägt den Unterschied zwischen matter Tiefe und satinierter Erhebung,
+      * der die Narbe überhaupt erst sichtbar macht.
+      */
+    leatherBlack: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.leatherBlackC, [3, 2]),
       normalMap: makeTex(T.leatherBlackN, [3, 2], false),
+      ...rough(T.leatherBlackR, [3, 2]),
       normalScale: new THREE.Vector2(0.45, 0.45),
-      // Leather has a satin-ish sheen — lower roughness than wool, slight specular boost
-      roughness: 0.55,
-      metalness: 0.10,
+      roughness: 0.62,
+      metalness: 0,
+      clearcoat: 0.35,
+      clearcoatRoughness: 0.42,
     }),
     bedding: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.beddingC, [3, 3]),
       normalMap: makeTex(T.beddingN, [3, 3], false),
+      ...rough(T.beddingR, [3, 3]),
       normalScale: new THREE.Vector2(0.3, 0.3),
       roughness: 0.95,
       metalness: 0.0,
@@ -394,6 +412,7 @@ function buildMaterials(): MatCache {
     pillow: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.linenWhiteC, [2, 2]),
       normalMap: makeTex(T.linenWhiteN, [2, 2], false),
+      ...rough(T.linenWhiteR, [2, 2]),
       normalScale: new THREE.Vector2(0.3, 0.3),
       roughness: 0.95,
       metalness: 0.0,
@@ -405,6 +424,8 @@ function buildMaterials(): MatCache {
     // glossy reflection of real honed-and-sealed stone, reflecting the IBL.
     marble: new THREE.MeshPhysicalMaterial({
       map: makeTex(T.marbleC, [1, 1]),
+      normalMap: makeTex(T.marbleN, [1, 1], false),
+      normalScale: new THREE.Vector2(0.22, 0.22),
       ...rough(T.marbleR, [1, 1]),
       roughness: 0.25,
       metalness: 0.05,
@@ -477,6 +498,7 @@ function buildMaterials(): MatCache {
     rug: new THREE.MeshStandardMaterial({
       map: makeTex(T.rugWoolC, [2, 2]),
       normalMap: makeTex(T.rugWoolN, [2, 2], false),
+      ...rough(T.rugWoolR, [2, 2]),
       normalScale: new THREE.Vector2(1.2, 1.2),
       // Grounded greige — the reference rugs sit a step darker than the sofa
       // so the seating island reads anchored, not floating on cream.
@@ -4420,8 +4442,13 @@ function echoFabricMat(): THREE.MeshStandardMaterial {
  */
 let _tileTex: THREE.CanvasTexture | null = null
 let _tileBump: THREE.CanvasTexture | null = null
-function ensureTileTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
-  if (_tileTex && _tileBump) return { map: _tileTex, bump: _tileBump }
+let _tileNormal: THREE.CanvasTexture | null = null
+let _tileRough: THREE.CanvasTexture | null = null
+function ensureTileTextures(): {
+  map: THREE.CanvasTexture; bump: THREE.CanvasTexture
+  normal: THREE.CanvasTexture; rough: THREE.CanvasTexture
+} {
+  if (_tileTex && _tileBump) return { map: _tileTex, bump: _tileBump, normal: _tileNormal!, rough: _tileRough! }
   const S = 512, tiles = 4, gap = 10
   const cell = S / tiles
   // Colour map
@@ -4454,16 +4481,31 @@ function ensureTileTextures(): { map: THREE.CanvasTexture; bump: THREE.CanvasTex
   }
   _tileTex = mk(cv, true)
   _tileBump = mk(bv, false)
-  return { map: _tileTex, bump: _tileBump }
+  /*
+   * Glasierte Fliese und Fugenmörtel sind der grösste Glanzunterschied im
+   * ganzen Haus — grösser als bei jedem anderen Material hier.
+   *
+   * Die Glasur ist eine Glasschicht (rund 0.1), der Zementmörtel daneben ist
+   * offenporig und vollkommen stumpf (rund 0.95). Alle drei Fliesenmaterialien
+   * standen dagegen auf **einem** Wert für beides: 0.30 bis 0.42. Damit
+   * verschwindet das Fugenraster im Glanz, und eine geflieste Wand liest sich
+   * als bedruckte Platte — was in Bad und Küche die grösste zusammenhängende
+   * Fläche des Raums betrifft.
+   */
+  _tileNormal = normalFromHeight(bv, 1.6)
+  _tileRough = roughFromHeight(bv, { lo: 0.10, hi: 0.95, seed: 5, patches: 0.05 })
+  return { map: _tileTex, bump: _tileBump, normal: _tileNormal, rough: _tileRough }
 }
 let _tileMat: THREE.MeshStandardMaterial | null = null
 function kitchenTileMat(): THREE.MeshStandardMaterial {
   if (_tileMat) return _tileMat
-  const { map, bump } = ensureTileTextures()
+  const { map, normal, rough } = ensureTileTextures()
   const m = map.clone(); m.needsUpdate = true; m.repeat.set(9, 2)
-  const b = bump.clone(); b.needsUpdate = true; b.repeat.set(9, 2)
+  const n = normal.clone(); n.needsUpdate = true; n.repeat.set(9, 2)
+  const r = rough.clone(); r.needsUpdate = true; r.repeat.set(9, 2)
   _tileMat = new THREE.MeshStandardMaterial({
-    map: m, bumpMap: b, bumpScale: 0.004, roughness: 0.35, metalness: 0.0, color: '#f2efe9',
+    map: m, normalMap: n, normalScale: new THREE.Vector2(0.6, 0.6),
+    roughnessMap: r, roughness: 0.9, metalness: 0.0, color: '#f2efe9',
   })
   return _tileMat
 }
@@ -4472,11 +4514,13 @@ function kitchenTileMat(): THREE.MeshStandardMaterial {
 let _floorTileMat: THREE.MeshStandardMaterial | null = null
 function floorTileMat(): THREE.MeshStandardMaterial {
   if (_floorTileMat) return _floorTileMat
-  const { map, bump } = ensureTileTextures()
+  const { map, normal, rough } = ensureTileTextures()
   const m = map.clone(); m.needsUpdate = true; m.repeat.set(7, 5)
-  const b = bump.clone(); b.needsUpdate = true; b.repeat.set(7, 5)
+  const n = normal.clone(); n.needsUpdate = true; n.repeat.set(7, 5)
+  const r = rough.clone(); r.needsUpdate = true; r.repeat.set(7, 5)
   _floorTileMat = new THREE.MeshStandardMaterial({
-    map: m, bumpMap: b, bumpScale: 0.003, roughness: 0.42, metalness: 0.0, color: '#e9e6df',
+    map: m, normalMap: n, normalScale: new THREE.Vector2(0.5, 0.5),
+    roughnessMap: r, roughness: 1.0, metalness: 0.0, color: '#e9e6df',
     polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
   })
   return _floorTileMat
@@ -4485,11 +4529,13 @@ function floorTileMat(): THREE.MeshStandardMaterial {
 let _bathTileMat: THREE.MeshStandardMaterial | null = null
 function bathTileMat(): THREE.MeshStandardMaterial {
   if (_bathTileMat) return _bathTileMat
-  const { map, bump } = ensureTileTextures()
+  const { map, normal, rough } = ensureTileTextures()
   const m = map.clone(); m.needsUpdate = true; m.repeat.set(5, 6)
-  const b = bump.clone(); b.needsUpdate = true; b.repeat.set(5, 6)
+  const n = normal.clone(); n.needsUpdate = true; n.repeat.set(5, 6)
+  const r = rough.clone(); r.needsUpdate = true; r.repeat.set(5, 6)
   _bathTileMat = new THREE.MeshStandardMaterial({
-    map: m, bumpMap: b, bumpScale: 0.004, roughness: 0.3, metalness: 0.0, color: '#eef0ef',
+    map: m, normalMap: n, normalScale: new THREE.Vector2(0.6, 0.6),
+    roughnessMap: r, roughness: 0.85, metalness: 0.0, color: '#eef0ef',
   })
   return _bathTileMat
 }
@@ -5333,8 +5379,11 @@ function HouseShell({ rooms, phase, daylightScale, style }: { rooms: Room[]; pha
     const trim = M2('#eae6dd', 0.85)
     const door = M2('#20222a', 0.5, 0.2)
     const glassLit = new THREE.MeshStandardMaterial({ color: lit ? '#ffdda2' : '#20252e', roughness: 0.12, metalness: 0.0, emissive: new THREE.Color(lit ? '#ffb057' : '#000'), emissiveIntensity: lit ? 0.85 : 0 }); mats.push(glassLit)
-    const glassDim = new THREE.MeshStandardMaterial({ color: lit ? '#b98f5e' : '#242d3a', roughness: 0.14, metalness: lit ? 0 : 0.2, emissive: new THREE.Color(lit ? '#c9812e' : '#000'), emissiveIntensity: lit ? 0.32 : 0 }); mats.push(glassDim)
-    const glassDark = new THREE.MeshStandardMaterial({ color: '#1a212c', roughness: 0.14, metalness: 0.3 }); mats.push(glassDark)
+    // Glas ist ein Dielektrikum: metalness 0. Mit einem Metallanteil färbt
+    // three die Spiegelung mit der Grundfarbe ein und lässt den diffusen
+    // Anteil verschwinden — aus einer Scheibe wird getöntes Blech.
+    const glassDim = new THREE.MeshPhysicalMaterial({ color: lit ? '#b98f5e' : '#202834', roughness: 0.07, metalness: 0, envMapIntensity: lit ? 0.9 : 1.6, emissive: new THREE.Color(lit ? '#c9812e' : '#000'), emissiveIntensity: lit ? 0.32 : 0 }); mats.push(glassDim)
+    const glassDark = new THREE.MeshPhysicalMaterial({ color: '#151b24', roughness: 0.05, metalness: 0, envMapIntensity: 1.7 }); mats.push(glassDark)
     // face klinker: front/back tile denser horizontally than the sides
     const fWall = klinker(fw / 0.9, eaves / 0.85)
     const sWall = klinker(fd / 0.9, eaves / 0.85)

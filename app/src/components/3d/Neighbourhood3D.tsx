@@ -23,6 +23,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
+import { useSkyEnvironment } from './skyEnvironment'
 import { quantise, type Rgb } from '@/lib/world/roofColours'
 import { RoundedBox } from '@react-three/drei'
 import { Static } from './Static'
@@ -174,7 +175,7 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
     wall: S(mixHex(pal.facades[1], '#ffffff', 0.1), 0.92),
     ridge: S('#1e1b19', 0.75),
     chimney: S('#4a4b50', 0.9),
-    solar: new THREE.MeshStandardMaterial({ color: '#101623', roughness: 0.18, metalness: 0.5 }),
+    solar: new THREE.MeshStandardMaterial({ color: '#101623', roughness: 0.14, metalness: 0.5 }),
     solarFrame: S('#2e3138', 0.5, 0.4),
     glassRail: new THREE.MeshPhysicalMaterial({ color: dim('#dfe4e6'), roughness: 0.35, transparent: true, opacity: 0.42 }),
 
@@ -184,17 +185,37 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
 
     // Window glass in three night states — a mix of lit, dim and dark windows
     // is what makes an estate read as inhabited rather than floodlit.
-    glassLit: new THREE.MeshStandardMaterial({
-      color: lit ? '#ffe3b0' : '#222b37', roughness: 0.16, metalness: lit ? 0 : 0.25,
+    /*
+     * Fensterglas.
+     *
+     * Hier stand `metalness: 0.25` bis `0.3`. Das ist nicht bloss ein zu hoher
+     * Wert, sondern das falsche Material: Glas ist ein **Dielektrikum**, sein
+     * Metallanteil ist null. Bei einem Metallanteil färbt three die Spiegelung
+     * mit der Grundfarbe ein und lässt den diffusen Anteil verschwinden — aus
+     * einer Scheibe wird dunkel getöntes Blech. Zusammen mit der fehlenden
+     * Himmelsspiegelung ergab das genau die flachen dunklen Rechtecke.
+     *
+     * `envMapIntensity` steht hoch, weil eine Scheibe fast nichts anderes tut,
+     * als ihre Umgebung zu spiegeln. Die Spiegelkarte selbst hängt der
+     * Renderer später ein (siehe `skyEnvironment`); ohne sie bleibt das Glas
+     * dunkel, aber wenigstens nicht metallisch.
+     */
+    glassLit: new THREE.MeshPhysicalMaterial({
+      color: lit ? '#ffe3b0' : '#1e2732', roughness: 0.06, metalness: 0,
+      envMapIntensity: lit ? 0.7 : 1.7,
       emissive: new THREE.Color(lit ? '#ffb457' : '#000000'), emissiveIntensity: lit ? 1.3 : 0,
     }),
-    glassDim: new THREE.MeshStandardMaterial({
-      color: lit ? '#c8a276' : '#242d3a', roughness: 0.16, metalness: lit ? 0 : 0.25,
+    glassDim: new THREE.MeshPhysicalMaterial({
+      color: lit ? '#c8a276' : '#202834', roughness: 0.07, metalness: 0,
+      envMapIntensity: lit ? 0.9 : 1.7,
       emissive: new THREE.Color(lit ? '#c97f2e' : '#000000'), emissiveIntensity: lit ? 0.45 : 0,
     }),
-    glassDark: new THREE.MeshStandardMaterial({ color: dim('#1a212c'), roughness: 0.14, metalness: 0.3 }),
-    shopGlass: new THREE.MeshStandardMaterial({
-      color: lit ? '#ffeccb' : '#2a3340', roughness: 0.1, metalness: lit ? 0 : 0.3,
+    glassDark: new THREE.MeshPhysicalMaterial({
+      color: dim('#151b24'), roughness: 0.05, metalness: 0, envMapIntensity: 1.8,
+    }),
+    shopGlass: new THREE.MeshPhysicalMaterial({
+      color: lit ? '#ffeccb' : '#242c38', roughness: 0.05, metalness: 0,
+      envMapIntensity: lit ? 0.8 : 1.9,
       emissive: new THREE.Color(lit ? '#ffcf8a' : '#000000'), emissiveIntensity: lit ? 1.1 : 0,
     }),
 
@@ -311,8 +332,21 @@ function buildMaterials(world: Neighbourhood, season: Season, daylight: number, 
     ].map(F)
   })
 
+  /*
+   * Autolack ist zweischichtig, und das ist der ganze Punkt.
+   *
+   * Vorher: `roughness 0.35, metalness 0.5` — ein halb metallischer, matter
+   * Körper. Echter Lack besteht aus einer pigmentierten Basis und einem klaren
+   * Decklack darüber, der spiegelt. Deshalb `clearcoat`: die Basis bleibt
+   * matt und farbig, die Spiegelung sitzt in der Schicht darüber. Ohne diese
+   * Trennung sieht ein Auto aus wie eine bemalte Form, und in einer
+   * Wohnstraße stehen davon zwanzig.
+   */
   const carBodies = ['#20242c', '#6b1f22', '#2b3a4d', '#c9c4bc', '#3d5a44', '#8d8f95']
-    .map((c) => S(c, 0.35, 0.5))
+    .map((c) => new THREE.MeshPhysicalMaterial({
+      color: dim(c), roughness: 0.42, metalness: 0.15,
+      clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.4,
+    }))
 
   const all: THREE.Material[] = [
     ...Object.values(m), ...facades, ...roofs, ...foliage, ...foliageVars.flat(), ...carBodies,
@@ -1429,6 +1463,43 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
     () => buildMaterials(world, season, daylightScale, phase),
     [world, season, daylightScale, phase],
   )
+
+  /*
+   * Der Himmel als Spiegelbild — auf genau die Materialien, die spiegeln.
+   *
+   * Es wird bewusst **nicht** `scene.environment` gesetzt. Dort hängt die
+   * Archviz-Box, die die Innenräume beleuchtet; sie durch den Aussenhimmel zu
+   * ersetzen hiesse, die abgestimmte Innenbeleuchtung für den Aussenraum zu
+   * opfern. Ein Material mit eigener `envMap` überschreibt die Szenenumgebung
+   * nur für sich selbst — innen bleibt innen, draussen spiegelt der Himmel.
+   *
+   * Die Auswahl ist keine Geschmacksfrage: hier stehen die Oberflächen, die in
+   * der Wirklichkeit ein Spiegelbild tragen. Rasen, Putz und Ziegel gehören
+   * nicht dazu und bekommen es deshalb auch nicht.
+   */
+  const skyEnv = useSkyEnvironment()
+  useEffect(() => {
+    const { m } = mats
+    const reflective: THREE.Material[] = [
+      m.glassLit, m.glassDim, m.glassDark, m.shopGlass, m.glassRail,
+      m.water, m.poolWater, m.solar, m.metal, m.drain, m.manhole,
+      ...mats.carBodies,
+    ]
+    for (const mat of reflective) {
+      const mm = mat as THREE.MeshStandardMaterial
+      mm.envMap = skyEnv
+      mm.needsUpdate = true
+    }
+    return () => {
+      // Beim Abbau die Karte wieder lösen: sie gehört dem Himmel, nicht dem
+      // Material, und ein Material mit Verweis auf eine freigegebene Textur
+      // zeichnet schwarz.
+      for (const mat of reflective) {
+        const mm = mat as THREE.MeshStandardMaterial
+        if (mm.envMap === skyEnv) { mm.envMap = null; mm.needsUpdate = true }
+      }
+    }
+  }, [mats, skyEnv])
 
   const built = useMemo(() => {
     const nodes: React.ReactNode[] = []

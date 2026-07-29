@@ -37,6 +37,7 @@ import { useEffect, useMemo } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { EnvironmentState } from '@/lib/environment'
+import { publishSkyEnvironment } from './skyEnvironment'
 
 /**
  * Auflösung der Himmelskarte.
@@ -206,6 +207,7 @@ function paintSky(env: EnvironmentState): HTMLCanvasElement {
 
 export function SkyDome({ env }: SkyDomeProps) {
   const scene = useThree((s) => s.scene)
+  const gl = useThree((s) => s.gl)
 
   /**
    * Nur neu zeichnen, wenn sich am Himmel etwas ändert, das man sehen kann.
@@ -235,15 +237,45 @@ export function SkyDome({ env }: SkyDomeProps) {
 
     const previous = scene.background
     scene.background = tex
+
+    /*
+     * Derselbe Himmel noch einmal, als Spiegelkarte.
+     *
+     * Eine Spiegelung braucht die Karte in vorgefilterter Form — je rauer ein
+     * Material, desto unschärfer muss sein Spiegelbild sein, und das lässt sich
+     * nicht zur Laufzeit je Pixel rechnen. `PMREMGenerator` erzeugt genau diese
+     * Stufenleiter einmal.
+     *
+     * Sie wird bewusst **nicht** an `scene.environment` gehängt: dort sitzt die
+     * Innenraum-Box, die die Räume beleuchtet. Stattdessen bekommt jedes
+     * Aussenmaterial sie einzeln als `envMap` — siehe `skyEnvironment`.
+     */
+    let env3d: THREE.WebGLRenderTarget | null = null
+    try {
+      const pmrem = new THREE.PMREMGenerator(gl)
+      env3d = pmrem.fromEquirectangular(tex)
+      pmrem.dispose()
+      publishSkyEnvironment(env3d.texture)
+    } catch {
+      // Ohne Spiegelkarte bleibt der Himmel trotzdem stehen; die Fenster
+      // spiegeln dann nur nichts. Ein Himmel ohne Spiegelung ist besser als
+      // gar keiner.
+      publishSkyEnvironment(null)
+    }
+
     return () => {
       // Nur zurücknehmen, was noch uns gehört — sonst überschreibt der Abbau
       // eines alten Himmels den neuen, der schon hängt.
       if (scene.background === tex) scene.background = previous
       tex.dispose()
+      if (env3d) {
+        publishSkyEnvironment(null)
+        env3d.dispose()
+      }
     }
     // `key` ist die Absicht, `env` nur die Quelle der Werte.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, key])
+  }, [scene, gl, key])
 
   return null
 }
