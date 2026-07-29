@@ -67,6 +67,15 @@ interface Props {
   phase: DayPhase
   /** The environment's continuous exterior-albedo scale (see lib/environment). */
   daylightScale: number
+  /**
+   * Stärke, mit der die Himmelskarte die diffusen Aussenflächen beleuchtet.
+   *
+   * Kommt aus `skyEnvIntensity` und damit aus derselben Formel, die den Himmel
+   * zeichnet — deshalb als Zahl von aussen und nicht hier ermittelt: die
+   * Bezugsgrösse ist das Hemisphärenlicht der Szene, und das kennt nur der
+   * Aufrufer.
+   */
+  envScale?: number
   season: Season
   /** Full trim only where it can be seen. */
   rich: boolean
@@ -1426,7 +1435,7 @@ const LOD_ANCHOR_STEP_M = 25
 /** Rang der Detailstufen — `massing` ist die grobste. */
 const RANK_LOD: Record<HouseLod, number> = { massing: 0, simple: 1, full: 2 }
 
-export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture, sampleGround }: Props) {
+export function Neighbourhood3D({ world, phase, daylightScale, season, rich, groundTexture, sampleGround, envScale = 0.3 }: Props) {
   /**
    * Der Bezugspunkt der Detailstufe.
    *
@@ -1480,26 +1489,67 @@ export function Neighbourhood3D({ world, phase, daylightScale, season, rich, gro
   const skyEnv = useSkyEnvironment()
   useEffect(() => {
     const { m } = mats
+
+    /*
+     * Zwei Gruppen, weil zwei verschiedene Dinge passieren.
+     *
+     * **Spiegelnd**: Glas, Wasser, Lack, Metall. Hier trägt die Karte das
+     * Spiegelbild, und das darf hell sein — eine Scheibe tut kaum etwas
+     * anderes, als ihre Umgebung zu spiegeln.
+     *
+     * **Diffus**: Putz, Klinker, Ziegel, Rasen, Asphalt. Hier trägt die Karte
+     * das **Umgebungslicht** — und genau das ist der Global-Illumination-Anteil,
+     * der bisher fehlte. Diese Flächen bekamen ihre Umgebungshelligkeit aus
+     * einem `hemisphereLight`, das den ganzen Himmel durch zwei Farben
+     * annähert, plus aus `scene.environment` — und dort hängt die
+     * Archviz-Box für die *Innenräume*. Eine Hauswand im Freien wurde also
+     * von einem Fotostudio beleuchtet.
+     *
+     * Jetzt beleuchtet sie der Himmel, mit seinem Verlauf, seinem hellen Band
+     * über dem Horizont und dem farbigen Rückwurf des Bodens — über Rasen
+     * bekommt eine helle Wand von unten einen grünen Anflug, über Pflaster
+     * nicht.
+     */
     const reflective: THREE.Material[] = [
       m.glassLit, m.glassDim, m.glassDark, m.shopGlass, m.glassRail,
       m.water, m.poolWater, m.solar, m.metal, m.drain, m.manhole,
       ...mats.carBodies,
     ]
+    const diffuse: THREE.Material[] = [
+      m.lawn, m.apron, m.lawnPlot, m.road, m.walk, m.drive, m.kerb,
+      m.gravel, m.soil, m.sand, m.trim, m.plinth, m.wall, m.ridge,
+      m.chimney, m.fence, m.sill, m.garageDoor, m.door, m.frame,
+      m.hedge, m.hedgeTop, m.trunk, m.dark,
+      ...mats.facades, ...mats.roofs, ...mats.foliage, ...mats.foliageVars.flat(),
+    ]
+
     for (const mat of reflective) {
       const mm = mat as THREE.MeshStandardMaterial
       mm.envMap = skyEnv
       mm.needsUpdate = true
     }
+    for (const mat of diffuse) {
+      const mm = mat as THREE.MeshStandardMaterial
+      mm.envMap = skyEnv
+      // Die Stärke ist **gerechnet**, nicht eingestellt — siehe
+      // `skyEnvIntensity`. Eine feste Zahl müsste sich für eine Tageszeit
+      // entscheiden: das Verhältnis zwischen Karte und Hemisphärenlicht
+      // schwankt über den Tag von rund 3× bis 11×, und auf den Mittag
+      // abgestimmt wäre die Nacht vierfach überstrahlt.
+      mm.envMapIntensity = envScale
+      mm.needsUpdate = true
+    }
+
     return () => {
       // Beim Abbau die Karte wieder lösen: sie gehört dem Himmel, nicht dem
       // Material, und ein Material mit Verweis auf eine freigegebene Textur
       // zeichnet schwarz.
-      for (const mat of reflective) {
+      for (const mat of [...reflective, ...diffuse]) {
         const mm = mat as THREE.MeshStandardMaterial
         if (mm.envMap === skyEnv) { mm.envMap = null; mm.needsUpdate = true }
       }
     }
-  }, [mats, skyEnv])
+  }, [mats, skyEnv, envScale])
 
   const built = useMemo(() => {
     const nodes: React.ReactNode[] = []

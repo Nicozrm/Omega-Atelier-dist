@@ -17,6 +17,7 @@
     "verify:sky": "vite-node scripts/verify-sky.ts",
     "verify:massing": "vite-node scripts/verify-massing.ts",
     "verify:materials": "vite-node scripts/verify-materials.ts",
+    "verify:gi": "vite-node scripts/verify-gi.ts",
     "verify:imagery": "vite-node scripts/verify-imagery.ts",
     "verify:structures": "vite-node scripts/verify-structures.ts",
     "verify:shadow-frustum": "vite-node scripts/verify-shadow-frustum.ts",

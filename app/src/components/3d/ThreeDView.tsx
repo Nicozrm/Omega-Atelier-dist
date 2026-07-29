@@ -91,6 +91,7 @@ import { Static, BATCH_MIN, batchStatic } from './Static'
 import { Neighbourhood3D } from './Neighbourhood3D'
 import { useOrthophotoGround } from './useOrthophotoGround'
 import { SkyDome } from './SkyDome'
+import { hexToRgb, skyEnvIntensity } from '@/lib/skyModel'
 import { useNeighbourhood, type WorldSource } from './useNeighbourhood'
 import { StreetLife } from './StreetLife'
 import {
@@ -5780,6 +5781,34 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
   })
   // Nach oben melden, damit die Oberfläche es anzeigen kann. Auf einem Telefon
   // gibt es keine Konsole, und ein stiller Fehlschlag sieht aus wie Rasen.
+  /*
+   * Wie stark der Himmel den Aussenraum beleuchtet.
+   *
+   * Gerechnet aus derselben Formel, die ihn zeichnet, und bezogen auf das
+   * Hemisphärenlicht, das er ergänzt. Eine feste Zahl wäre hier der Fehler:
+   * das Verhältnis zwischen Himmelskarte und Hemisphärenlicht schwankt über
+   * den Tag zwischen rund 3× (Mittag) und 11× (Nacht), weil die Intensität des
+   * Hemisphärenlichts nachts fast auf null fällt, ein Nachthimmel aber
+   * dunkelblau bleibt und nicht schwarz wird. Auf den Mittag abgestimmt wäre
+   * die Nacht vierfach überstrahlt — gleichmässig, also nicht als Fehler
+   * erkennbar, sondern nur als schlechte Belichtung.
+   *
+   * `share` unter 1: die Karte trägt zwei Drittel dessen bei, was das
+   * Hemisphärenlicht liefert. Sie ersetzt es nicht, denn das Hemisphärenlicht
+   * beleuchtet auch die Innenräume, die ihre eigene Umgebung behalten.
+   */
+  const envScale = useMemo(() => skyEnvIntensity(
+    {
+      zenith: hexToRgb(env.sky.zenithColor),
+      horizon: hexToRgb(env.sky.horizonColor),
+      cloudiness: env.weather.cloudiness,
+      groundAlbedo: [0.19, 0.25, 0.14],
+    },
+    hexToRgb(env.lighting.hemisphere.skyColor),
+    env.lighting.hemisphere.intensity * 0.72,
+    0.66,
+  ), [env])
+
   const groundNote = ortho.photo
     ? `${ortho.photo.source.label} · ${ortho.photo.cmPerPixel} cm/px`
     : ortho.loading ? 'Luftbild wird geladen …'
@@ -5919,6 +5948,7 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
         rich={rich}
         groundTexture={ortho.texture}
         sampleGround={ortho.sampleAt}
+        envScale={envScale}
       />
 
       {/* Traffic and people. Off in walkthrough (the camera is inside anyway)

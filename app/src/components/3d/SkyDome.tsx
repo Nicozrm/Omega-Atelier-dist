@@ -38,6 +38,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { EnvironmentState } from '@/lib/environment'
 import { publishSkyEnvironment } from './skyEnvironment'
+import { hexToRgb, skyIrradiance, skyRadiance, type SkyModel } from '@/lib/skyModel'
 
 /**
  * Auflösung der Himmelskarte.
@@ -50,14 +51,18 @@ import { publishSkyEnvironment } from './skyEnvironment'
 const W = 1024
 const H = 512
 
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace('#', '')
-  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
-}
-
 export interface SkyDomeProps {
   env: EnvironmentState
+  /**
+   * Albedo des Bodens, 0…1 je Kanal — was die Fläche unter der Szene an Licht
+   * zurückwirft. Rasen wirft grünlich und rund ein Viertel, Asphalt neutral und
+   * gut ein Achtel.
+   */
+  groundAlbedo?: [number, number, number]
 }
+
+/** Rasen als Vorgabe: der häufigste Untergrund einer Wohnsiedlung. */
+const DEFAULT_GROUND_ALBEDO: [number, number, number] = [0.19, 0.25, 0.14]
 
 /**
  * Zeichnet die Himmelskarte.
@@ -67,57 +72,38 @@ export interface SkyDomeProps {
  * `v = asin(y) / π + 0.5`. Eine `CanvasTexture` wird mit `flipY` hochgeladen,
  * die **oberste Leinwandzeile ist damit der Zenit**.
  */
-function paintSky(env: EnvironmentState): HTMLCanvasElement {
+function paintSky(env: EnvironmentState, groundAlbedo: [number, number, number]): HTMLCanvasElement {
   const cv = document.createElement('canvas')
   cv.width = W; cv.height = H
   const ctx = cv.getContext('2d')!
   const img = ctx.createImageData(W, H)
   const d = img.data
-
-  const [zr, zg, zb] = hexToRgb(env.sky.zenithColor)
-  const [hr, hg, hb] = hexToRgb(env.sky.horizonColor)
   const cloud = env.weather.cloudiness
 
-  /**
-   * Die Kurve des Verlaufs.
+  /*
+   * Der Himmel wird nicht mehr hier beschrieben, sondern in `lib/skyModel`.
    *
-   * `y^0.42` statt `y`: bei 10° Höhe ist der Himmel schon zu rund 40 % auf
-   * Zenitfarbe, bei 45° zu über 80 %. Genau so verhält sich die reale
-   * Luftsäule — und genau diese Krümmung fehlt einem CSS-Verlauf.
-   * Bei Bewölkung wird die Kurve flacher, weil eine geschlossene Wolkendecke
-   * tatsächlich gleichmässig leuchtet.
+   * Das ist kein Aufräumen: die Karte ist ab jetzt **auch die Lichtquelle** des
+   * Aussenraums, und was eine Szene beleuchtet, muss nachrechenbar sein. Läge
+   * die Formel im Zeichner, liesse sich die Beleuchtungsstärke nur messen,
+   * indem man das Bild wieder ausliest — und jede spätere Änderung am Verlauf
+   * würde die Helligkeit der ganzen Szene verschieben, ohne dass es auffällt.
    */
-  const curve = 0.42 + cloud * 0.34
+  const sky: SkyModel = {
+    zenith: hexToRgb(env.sky.zenithColor),
+    horizon: hexToRgb(env.sky.horizonColor),
+    cloudiness: cloud,
+    groundAlbedo,
+  }
+  // Einmal vorab: der Bodenanteil ist das vom Himmel beleuchtete Rückwurflicht
+  // und braucht deshalb die Beleuchtungsstärke der oberen Halbkugel.
+  const upper = skyIrradiance(sky)
 
   for (let py = 0; py < H; py++) {
     // Leinwandzeile → v → Höhenwinkel. Oben ist Zenit.
     const v = 1 - py / (H - 1)
     const dy = Math.sin((v - 0.5) * Math.PI)
-    const up = Math.max(0, dy)
-
-    const t = Math.pow(up, curve)
-    let r = hr + (zr - hr) * t
-    let g = hg + (zg - hg) * t
-    let b = hb + (zb - hb) * t
-
-    // Horizontdunst: die letzten Grad über der Kante werden heller und
-    // entsättigter. Das ist der Übergang, an dem eine Szene ihre Tiefe bekommt
-    // — er schliesst den Nebel der Szene optisch an den Himmel an.
-    const haze = Math.pow(1 - up, 9)
-    const hz = 0.16 + cloud * 0.12
-    r += (hr * 1.1 - r) * haze * hz
-    g += (hg * 1.1 - g) * haze * hz
-    b += (hb * 1.12 - b) * haze * hz
-
-    // Unter dem Horizont: kein zweiter Himmel, sondern ein dunkler Bodenton.
-    // Man sieht ihn nur, wenn die Kamera unter die Grundebene taucht — dort
-    // wäre ein gespiegelter Himmel das verräterischste Zeichen einer Kulisse.
-    if (dy < 0) {
-      const k = Math.min(1, -dy * 3.2)
-      r += (r * 0.34 - r) * k
-      g += (g * 0.34 - g) * k
-      b += (b * 0.36 - b) * k
-    }
+    const [r, g, b] = skyRadiance(sky, dy, upper)
 
     for (let px = 0; px < W; px++) {
       const i = (py * W + px) * 4
@@ -205,7 +191,7 @@ function paintSky(env: EnvironmentState): HTMLCanvasElement {
   return cv
 }
 
-export function SkyDome({ env }: SkyDomeProps) {
+export function SkyDome({ env, groundAlbedo = DEFAULT_GROUND_ALBEDO }: SkyDomeProps) {
   const scene = useThree((s) => s.scene)
   const gl = useThree((s) => s.gl)
 
@@ -222,10 +208,11 @@ export function SkyDome({ env }: SkyDomeProps) {
     Math.round(env.sun.direction.x * 32), Math.round(env.sun.direction.y * 32),
     Math.round(env.sun.direction.z * 32), env.sun.aboveHorizon,
     Math.round(env.weather.cloudiness * 20),
-  ].join('|'), [env])
+    groundAlbedo.map((c) => Math.round(c * 40)).join(','),
+  ].join('|'), [env, groundAlbedo])
 
   useEffect(() => {
-    const tex = new THREE.CanvasTexture(paintSky(env))
+    const tex = new THREE.CanvasTexture(paintSky(env, groundAlbedo))
     tex.mapping = THREE.EquirectangularReflectionMapping
     tex.colorSpace = THREE.SRGBColorSpace
     // Der Verlauf ist glatt; ohne lineare Filterung an der Naht bei u = 0
