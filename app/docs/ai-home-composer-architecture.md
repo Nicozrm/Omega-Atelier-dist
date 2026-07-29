@@ -1,7 +1,27 @@
 # AI Home Composer — Architektur
 
-Status: **Entwurf zur Freigabe.** Noch nicht implementiert.
-Dieses Dokument begründet jede Designentscheidung, bevor Code entsteht.
+Status: **umgesetzt**, mit Abweichungen vom Entwurf.
+
+Dieses Dokument ist als Entwurf entstanden und begründet jede
+Designentscheidung. Es wird bewusst **nicht** rückwirkend geglättet: wo die
+Umsetzung den Entwurf widerlegt hat, steht das als Nachtrag daneben. Ein
+Architekturdokument, das nur die Entscheidungen zeigt, die sich als richtig
+erwiesen haben, verschweigt genau das, was beim nächsten Mal hilft.
+
+Die größte Abweichung: **die geplante Supabase-Serverstufe ist entfallen.**
+Ihre Begründung — LoD2-Kacheln in zweistelliger MB-Größe — hat sich als falsch
+erwiesen, siehe den Nachtrag in Abschnitt „Serverstufe".
+
+Was heute läuft, in Betrieb geprüft an der Kolpingstr. 9 in Borghorst:
+
+| Ebene | Quelle | Belegt durch |
+|---|---|---|
+| Grundstücksgrenze | ALKIS | `verify:alkis` — 1044 m², Flur 017, Flurstück 738 |
+| Haus und Nebengebäude | ALKIS | `verify:structures` — 116 m² Haus + 76 m² Garagenzeile |
+| Nachbarschaft | ALKIS | `verify:world` — 694 Gebäude, 1,9× so viele wie aus OSM |
+| Boden | DOP 10 cm | `verify:dop` — Maßstab gegen Haversine geprüft |
+| Höhen und Dachformen | LoD2 | `verify:lod2` — 162 von 221 Gebäuden vermessen |
+| Straßen, POIs, Geschosse | Overpass | `verify:osm` |
 
 ---
 
@@ -61,7 +81,7 @@ kostenfrei veröffentlicht** ist:
 
 | Quelle | Was sie liefert | Deckt Phase |
 |---|---|---|
-| **LoD2-Gebäudemodelle** (NRW, alle Länder, CityGML) | Gebäudeumriss, **echte Dachform**, Firsthöhe, Traufhöhe, Geschossigkeit — vermessen, nicht geschätzt | 2 |
+| **LoD2-Gebäudemodelle** (NRW, `ogc-api.nrw.de/3dg/v1`) | **Echte Dachform**, Firsthöhe — vermessen, nicht geschätzt. Umgesetzt; als OGC API Features statt als CityGML-Kachel, siehe Nachtrag. | 2 |
 | **ALKIS Flurstücke** (NRW OpenGeodata) | **Echte Grundstücksgrenzen**, Fläche, Flurstücksnummer | 1 |
 | **DGM1** (1 m Höhenraster) | Echtes Geländemodell: Neigung, Exposition, Höhenunterschiede, Böschungen | 3 |
 | **OpenStreetMap / Overpass** | Straßen mit Klassifikation, Gehwege, Kreuzungen, Supermärkte, Bäckereien, Apotheken, Schulen, Bushaltestellen, Spielplätze, Parks, Flüsse, Bahnlinien, Gewerbe, Laternen, Adressen, `building:levels`, `roof:shape`, `roof:material` | 2, 5 |
@@ -272,21 +292,45 @@ und zugleich wirkungsvollste Einzeländerung des ganzen Entwurfs.
 **Entscheidung D8 — Die Analyse läuft serverseitig und wird pro Geo-Zelle
 gecacht, nicht pro Nutzer und nicht pro Session.**
 
-Im Browser ist das nicht tragfähig: CORS, Rate-Limits, keine gemeinsame
-Nutzung, kein Cache über Sessions, LoD2-Kacheln in zweistelliger MB-Größe.
+### Nachtrag: die Serverstufe ist nicht gekommen — und wird nicht gebraucht
 
-Der Schnitt:
+Der Absatz oben stand hier lange, und sein Kernargument war falsch. Er stützte
+sich auf einen einzigen Umstand: LoD2-Kacheln in zweistelliger MB-Größe. Für
+eine Firsthöhe 40 MB zu laden ist im Browser tatsächlich nicht vertretbar, und
+daraus folgte eine ganze Architekturstufe.
+
+Beim Anbinden stellte sich heraus, dass NRW dasselbe Modell längst als **OGC
+API Features** veröffentlicht (`ogc-api.nrw.de/3dg/v1`, Sammlung `building`).
+Statt einer 40-MB-Kachel sind es **75 kB für 64 Gebäude**, bbox-abfragbar, mit
+offenem CORS. Damit fällt die Begründung weg, und mit ihr die Stufe.
+
+Alle Quellen laufen heute direkt im Browser:
+
+| Quelle | Endpunkt | Was sie liefert |
+|---|---|---|
+| ALKIS | `ogc-api.nrw.de/lika/v1` | Flurstück, Gebäudeumrisse, Nutzung |
+| LoD2 | `ogc-api.nrw.de/3dg/v1` | Firsthöhe, Dachform |
+| DOP | `wms.nrw.de/geobasis/wms_nw_dop` | Luftbild, 10 cm |
+| Overpass | `overpass-api.de` | Straßenachsen, POIs, Geschosse |
+
+Was der Entwurf richtig gesehen hat, gilt weiter und ist umgesetzt: **Fristen
+je Quelle** (`sources/deadline.ts`), **Rückfall statt Fehlschlag**, und
+**geografische Cache-Schlüssel** statt Sitzungsschlüssel.
+
+Eine Serverstufe bleibt sinnvoll, sobald ein gemeinsamer Cache über Nutzer
+hinweg gebraucht wird — LoD2 antwortet gemessen in 37 bis 55 s und läuft
+regelmäßig in HTTP 502. Das ist dann aber eine Frage von Geschwindigkeit und
+Höflichkeit gegenüber dem Dienst, nicht mehr von Machbarkeit.
+
+Der ursprüngliche Schnitt, zur Einordnung:
 
 | Ebene | Läuft wo | Aufgabe |
 |---|---|---|
-| Sources + Resolvers | **Supabase Edge Function** | Quellen holen, normalisieren |
-| Cache | **Postgres + PostGIS** | Observations pro Zelle, mit Quellversion |
-| Fusion | Edge Function | Observations → `SiteDocument` |
+| Sources + Resolvers | ~~Supabase Edge Function~~ → Browser | Quellen holen, normalisieren |
+| Cache | ~~Postgres + PostGIS~~ → Speicher, geografisch geschlüsselt | Observations pro Zelle |
+| Fusion | Browser | Observations → `SiteDocument` |
 | Overrides + Editor | Browser | Nutzeränderungen |
 | Renderer | Browser | `SiteDocument` → Szene |
-
-Supabase ist bereits im Stack (`lib/supabase.ts`), es kommt also keine neue
-Infrastruktur dazu.
 
 **Räumliche Schlüssel statt Nutzerschlüssel.** Cache-Key ist eine
 Geo-Zelle (H3 Level 11 ≈ 25 m, oder Quadkey z16) plus Quellversion. Zwei
