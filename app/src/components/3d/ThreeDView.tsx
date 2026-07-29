@@ -5797,17 +5797,35 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
    * Hemisphärenlicht liefert. Sie ersetzt es nicht, denn das Hemisphärenlicht
    * beleuchtet auch die Innenräume, die ihre eigene Umgebung behalten.
    */
+  /*
+   * Der Bodenanteil kommt aus dem Luftbild, wenn es eines gibt.
+   *
+   * Bisher stand hier ein angenommener Rasenwert. Liegt die amtliche Befliegung
+   * unter der Szene, ist die Frage „wie viel Licht wirft der Boden zurück und
+   * in welcher Farbe" aber **gemessen** zu beantworten: das Bild ist die
+   * Aufsicht auf genau diese Fläche. Über einer Wohnstraße mit Asphalt,
+   * Ziegeldächern und Gärten ist der echte Rückwurf deutlich grauer und wärmer
+   * als reines Grün — und das ist der Ton, den die Fassaden von unten bekommen.
+   *
+   * Dieselbe Regel wie überall in dieser Pipeline: gemessen schlägt angenommen,
+   * angenommen schlägt leer.
+   */
+  const groundAlbedo = useMemo<[number, number, number]>(
+    () => ortho.albedo ?? [0.19, 0.25, 0.14],
+    [ortho.albedo],
+  )
+
   const envScale = useMemo(() => skyEnvIntensity(
     {
       zenith: hexToRgb(env.sky.zenithColor),
       horizon: hexToRgb(env.sky.horizonColor),
       cloudiness: env.weather.cloudiness,
-      groundAlbedo: [0.19, 0.25, 0.14],
+      groundAlbedo,
     },
     hexToRgb(env.lighting.hemisphere.skyColor),
     env.lighting.hemisphere.intensity * 0.72,
     0.66,
-  ), [env])
+  ), [env, groundAlbedo])
 
   const groundNote = ortho.photo
     ? `${ortho.photo.source.label} · ${ortho.photo.cmPerPixel} cm/px`
@@ -5832,7 +5850,7 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           Sonnenscheibe, Sonnenhof und Horizontdunst (siehe SkyDome). Der
           CSS-Verlauf am Canvas bleibt als Rückfall für den Moment vor dem
           ersten Zeichnen bestehen. */}
-      <SkyDome env={env} />
+      <SkyDome env={env} groundAlbedo={groundAlbedo} />
       <fog attach="fog" args={[env.sky.horizonColor, Math.max(wM, hM) * 2.4, Math.max(world.extentM * 1.9, Math.max(wM, hM) * 7.5)]} />
       <hemisphereLight args={[new THREE.Color(env.lighting.hemisphere.skyColor).lerp(new THREE.Color('#ffefd6'), 0.16), env.lighting.hemisphere.groundColor, env.lighting.hemisphere.intensity * 0.72]} />
       {/* Trim the flat uniform fill hard so the directional key, cove strips and

@@ -494,6 +494,84 @@ function windowUnit(
 
 /* ────────────────────────────── Buildings ───────────────────────────── */
 
+
+/**
+ * Ein echtes Walmdach.
+ *
+ * Hier stand `coneGeometry(hypot(W, D) * 0.52, rise, 4)` — ein vierseitiger
+ * Kegel, also eine **Vierkantpyramide**, um 45° gedreht. Das ist ein Zeltdach,
+ * und ein Zeltdach gibt es nur über einem quadratischen Grundriss. Über einem
+ * Rechteck ist es in beide Richtungen zugleich falsch: der Umkreisradius wird
+ * aus der Diagonale gebildet, die Grundkante der Pyramide misst also
+ * `hypot(W, D) · 0,52 · √2`. Auf einem 12 × 8 m Haus sind das 10,6 × 10,6 m —
+ * über der langen Seite fehlen 1,4 m Dach, über der kurzen ragt es 1,3 m je
+ * Seite hinaus. Beides sieht man sofort, und beides betraf jedes Walmdachhaus
+ * der Nachbarschaft.
+ *
+ * Ein echtes Walmdach hat bei gleicher Neigung ringsum einen **First**: zwei
+ * trapezförmige Hauptflächen über den langen Seiten und zwei dreieckige Walme
+ * an den Enden. Der First läuft über die längere Achse und ist genau
+ * `|W − D|` lang — bei quadratischem Grundriss wird er null, und dann ist es
+ * tatsächlich ein Zeltdach. Der Sonderfall ergibt sich also von selbst, statt
+ * der Normalfall zu sein.
+ *
+ * Die Wicklung wird nicht von Hand abgezählt, sondern je Dreieck geprüft: alle
+ * Dachflächen zeigen nach oben, also ist `normal.y > 0` das Kriterium. Das ist
+ * kürzer als vier Fälle durchzudenken und lässt sich nicht falsch abschreiben.
+ */
+export function hipRoofGeometry(w: number, d: number, rise: number): THREE.BufferGeometry {
+  const alongX = w >= d
+  const ridgeLen = Math.abs(w - d)
+  const hw = w / 2, hd = d / 2
+
+  // Traufecken, im Uhrzeigersinn von vorne links.
+  const c: [number, number, number][] = [
+    [-hw, 0, -hd], [hw, 0, -hd], [hw, 0, hd], [-hw, 0, hd],
+  ]
+  const r1: [number, number, number] = alongX ? [-ridgeLen / 2, rise, 0] : [0, rise, -ridgeLen / 2]
+  const r2: [number, number, number] = alongX ? [ridgeLen / 2, rise, 0] : [0, rise, ridgeLen / 2]
+
+  /*
+   * Quadratischer Grundriss: der First fällt auf einen Punkt zusammen, und aus
+   * dem Walmdach wird ein Zeltdach. Ohne diesen Fall blieben zwei der sechs
+   * Dreiecke mit **null Fläche** stehen — sie haben keine Normale, `computeVertexNormals`
+   * bekommt einen Nullvektor, und die angrenzenden Ecken erben eine kaputte
+   * Schattierung. Unsichtbar im Standbild, sichtbar als Flackern an der
+   * Dachspitze, sobald sich das Licht bewegt.
+   */
+  const tris: [number, number, number][][] = ridgeLen < 1e-6
+    ? [[c[0], c[1], r1], [c[1], c[2], r1], [c[2], c[3], r1], [c[3], c[0], r1]]
+    : alongX
+    ? [
+      [c[0], c[1], r2], [c[0], r2, r1],   // Hauptfläche vorne
+      [c[2], c[3], r1], [c[2], r1, r2],   // Hauptfläche hinten
+      [c[3], c[0], r1],                    // Walm links
+      [c[1], c[2], r2],                    // Walm rechts
+    ]
+    : [
+      [c[1], c[2], r2], [c[1], r2, r1],   // Hauptfläche rechts
+      [c[3], c[0], r1], [c[3], r1, r2],   // Hauptfläche links
+      [c[0], c[1], r1],                    // Walm vorne
+      [c[2], c[3], r2],                    // Walm hinten
+    ]
+
+  const pos: number[] = []
+  for (const t of tris) {
+    const [a, b, e] = t
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2]
+    const vx = e[0] - a[0], vy = e[1] - a[1], vz = e[2] - a[2]
+    // Flächennormale zeigt bei richtiger Wicklung nach oben.
+    const ny = uz * vx - ux * vz
+    const ordered = ny > 0 ? t : [a, e, b]
+    for (const p of ordered) pos.push(p[0], p[1], p[2])
+  }
+
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  g.computeVertexNormals()
+  return g
+}
+
 /**
  * Ein Nachbarhaus.
  *
@@ -639,12 +717,33 @@ function houseNode(h: HouseSpec, mats: MatBag, rich: boolean, realGround = false
       </group>,
     )
   } else if (h.roof === 'hip') {
-    const rh = Math.min(W, D) * 0.4
+    // Traufüberstand wie beim Satteldach — die Kante, die man am weitesten sieht.
+    const OVH = 0.42
+    const hw = W + OVH * 2, hd = D + OVH * 2
+    // Firsthöhe aus der Neigung über die **kurze** Achse: dort spannen die
+    // Sparren, und die Neigung ist ringsum dieselbe.
+    const rh = (Math.min(hw, hd) / 2) * Math.tan((h.roofPitchDeg * Math.PI) / 180)
+    const ridgeLen = Math.abs(hw - hd)
     parts.push(
-      <mesh key="rh" position={[0, H + rh / 2, 0]} rotation={[0, Math.PI / 4, 0]} castShadow={casts} material={roofMat}>
-        <coneGeometry args={[Math.hypot(W, D) * 0.52, rh, 4]} />
+      <mesh key="rh" position={[0, H, 0]} castShadow={casts} material={roofMat}>
+        <primitive object={hipRoofGeometry(hw, hd, rh)} attach="geometry" />
       </mesh>,
     )
+    // Firstziegel — nur wo es einen First gibt. Über quadratischem Grundriss
+    // läuft `ridgeLen` gegen null, und dann ist es zu Recht ein Zeltdach.
+    if (ridgeLen > 0.3) {
+      parts.push(
+        <mesh
+          key="rhr"
+          position={[0, H + rh + 0.02, 0]}
+          rotation={[0, hw >= hd ? Math.PI / 2 : 0, 0]}
+          castShadow={casts}
+          material={m.ridge}
+        >
+          <boxGeometry args={[0.24, 0.1, ridgeLen]} />
+        </mesh>,
+      )
+    }
   } else {
     // Gable (and mansard, drawn as a steeper gable) — two slopes plus a ridge
     // cap, with the triangular gable ends filled by the facade material.

@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { resolveOrthophoto, type Orthophoto } from '@/lib/composer/sources/dop'
 import { medianColour, rgbToHex } from '@/lib/world/roofColours'
+import { srgbToLinear } from '@/lib/skyModel'
 import type { PlanGeo } from '@/types'
 
 export interface OrthophotoGround {
@@ -27,6 +28,16 @@ export interface OrthophotoGround {
    * Dächer.
    */
   sampleAt?: (x: number, z: number, radiusM?: number) => string | undefined
+  /**
+   * Mittlere Reflexion der abgebildeten Fläche, linear, 0…1 je Kanal.
+   *
+   * Das ist der Bodenanteil der Umgebungsbeleuchtung (siehe `lib/skyModel`):
+   * wie viel Licht der Boden zurückwirft und in welcher Farbe. Bisher stand
+   * dort ein angenommener Rasenwert. Liegt ein Luftbild vor, ist die Antwort
+   * **messbar** — und über einer Straße mit Asphalt, Ziegeldächern und Gärten
+   * ist der echte Rückwurf deutlich grauer und wärmer als reines Grün.
+   */
+  albedo?: [number, number, number]
   /** Für die Nennung im Bild — die Lizenz verlangt sie nicht, der Anstand schon. */
   attribution?: string
   photo?: Orthophoto
@@ -118,12 +129,14 @@ export function useOrthophotoGround(input: UseOrthophotoGroundInput): Orthophoto
       // reiner Speicherzugriff. Das Bild selbst wandert unverändert als Textur
       // auf die GPU — hier geht es nur um die Farbwerte.
       const sampler = makeSampler(found.image, found.photo.groundSizeM)
+      const albedo = meanAlbedo(found.image)
 
       setState({
         texture: tex,
         attribution: found.photo.source.attribution,
         photo: found.photo,
         sampleAt: sampler,
+        albedo,
         loading: false,
       })
     })()
@@ -184,6 +197,45 @@ function makeSampler(
         return undefined
       }
     }
+  } catch {
+    return undefined
+  }
+}
+
+
+/**
+ * Mittlere Reflexion des Luftbilds — der Bodenanteil der Beleuchtung.
+ *
+ * Zwei Dinge sind daran wichtig und beide leicht zu übersehen:
+ *
+ *  1. **Linear mitteln, nicht in sRGB.** Ein Bildwert von 128 entspricht rund
+ *     21 % Reflexion, nicht 50 %. Wer die Bildwerte direkt mittelt, überschätzt
+ *     die Helligkeit des Bodens erheblich — bei einer typischen Wohnstraße um
+ *     mehr als das Doppelte —, und die Szene bekäme von unten viel zu viel
+ *     Licht.
+ *  2. **Grob abtasten genügt.** Gesucht ist ein einziger Mittelwert über
+ *     mehrere hundert Meter Fläche; jedes zweiundreissigste Pixel liefert ihn
+ *     mit derselben Genauigkeit wie alle.
+ */
+function meanAlbedo(image: HTMLImageElement): [number, number, number] | undefined {
+  try {
+    const px = 128
+    const cv = document.createElement('canvas')
+    cv.width = cv.height = px
+    const ctx = cv.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return undefined
+    ctx.drawImage(image, 0, 0, px, px)
+    const d = ctx.getImageData(0, 0, px, px).data
+
+    const toLinear = srgbToLinear
+
+    let r = 0, g = 0, b = 0, n = 0
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 128) continue // durchsichtige Stellen zählen nicht mit
+      r += toLinear(d[i]); g += toLinear(d[i + 1]); b += toLinear(d[i + 2]); n++
+    }
+    if (n === 0) return undefined
+    return [r / n, g / n, b / n]
   } catch {
     return undefined
   }

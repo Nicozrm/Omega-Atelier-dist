@@ -203,3 +203,25 @@ export function skyEnvIntensity(
   // überstrahlen kann.
   return Math.max(0.03, Math.min(1.6, target / have))
 }
+
+/**
+ * sRGB-Bildwert (0…255) → lineare Reflexion (0…1).
+ *
+ * Nach der Norm und nicht als Gamma 2,2 — die beiden weichen in den dunklen
+ * Werten spürbar ab, und Asphalt liegt genau dort.
+ *
+ * Warum das eine eigene, geprüfte Funktion ist: die Verwechslung von Bildwert
+ * und Reflexion ist der teuerste Fehler beim Ableiten von Licht aus einem Foto,
+ * und er ist nicht zu sehen, sondern nur zu rechnen. Am Luftbild der
+ * Kolpingstr. 9 gemessen — 240 m Kante, 65 536 Stützpunkte:
+ *
+ *     Bildmittel                 104 106 106  (sRGB)
+ *     Reflexion, linear          0,184 0,173 0,167
+ *     direkt aus sRGB gemittelt  0,410 0,414 0,414   → **2,4× zu hell**
+ *
+ * Der Boden hätte also mehr als das Doppelte an Licht zurückgeworfen.
+ */
+export function srgbToLinear(v: number): number {
+  const c = v / 255
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+}

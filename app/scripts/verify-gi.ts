@@ -27,7 +27,7 @@
  */
 
 import { deriveEnvironment } from '../src/lib/environment'
-import { hexToRgb, skyEnvIntensity, skyIrradiance, skyRadiance, type Rgb, type SkyModel } from '../src/lib/skyModel'
+import { hexToRgb, skyEnvIntensity, skyIrradiance, skyRadiance, srgbToLinear, type Rgb, type SkyModel } from '../src/lib/skyModel'
 
 /** Rasen — der häufigste Untergrund einer Wohnsiedlung. */
 const LAWN: Rgb = [0.19, 0.25, 0.14]
@@ -169,6 +169,42 @@ check(
   lum(nightE) < lum(noonE) * 0.2,
   'Nacht bleibt Nacht',
   `${lum(nightE).toFixed(0)} gegen ${lum(noonE).toFixed(0)} am Mittag = ${Math.round((lum(nightE) / lum(noonE)) * 100)} %`,
+)
+
+/* ── Gemessen schlägt angenommen ────────────────────────────────────────
+ *
+ * Der Bodenanteil war ein angenommener Rasenwert. Liegt ein Luftbild unter der
+ * Szene, ist er messbar — das Bild ist die Aufsicht auf genau diese Fläche.
+ *
+ * Die Zahlen unten stammen aus dem amtlichen DOP der Kolpingstr. 9 (Geobasis
+ * NRW, 240 m Kante, 65 536 Stützpunkte, linear gemittelt). Sie zeigen zweierlei:
+ * dass die Annahme daneben lag, und dass die Umrechnung sRGB → linear kein
+ * Detail ist.
+ */
+console.log('\n══ Bodenreflexion — angenommen gegen gemessen')
+const MEASURED: Rgb = [0.184, 0.173, 0.167]  // DOP Kolpingstr. 9
+console.log(`   angenommen (Rasen)   ${LAWN.map((c) => c.toFixed(3)).join(' ')}`)
+console.log(`   gemessen (DOP)       ${MEASURED.map((c) => c.toFixed(3)).join(' ')}`)
+const greenBias = LAWN[1] / ((LAWN[0] + LAWN[2]) / 2)
+const measuredBias = MEASURED[1] / ((MEASURED[0] + MEASURED[2]) / 2)
+check(
+  Math.abs(measuredBias - 1) < 0.1 && greenBias > 1.3,
+  'Annahme war zu grün',
+  `Grünstich angenommen ${greenBias.toFixed(2)}, gemessen ${measuredBias.toFixed(2)} — eine Wohnstraße ist überwiegend Dach und Asphalt`,
+)
+
+/*
+ * Und die Umrechnung selbst. Ein Bildwert von 105 ist keine Reflexion von 41 %,
+ * sondern von rund 14 % — wer die Bildwerte direkt mittelt, überschätzt den
+ * Rückwurf um mehr als das Doppelte, und die Szene bekäme von unten viel zu
+ * viel Licht. Der Fehler ist nicht zu sehen, nur zu rechnen.
+ */
+const naive = 105 / 255
+const correct = srgbToLinear(105)
+check(
+  Math.abs(correct - 0.1413) < 0.0005,
+  'sRGB → linear stimmt',
+  `Bildwert 105 → ${correct.toFixed(3)} Reflexion; direkt gemittelt wären es ${naive.toFixed(3)} = ${(naive / correct).toFixed(1)}× zu hell`,
 )
 
 console.log(`\n${failures === 0 ? '✓ Die Himmelsbeleuchtung ist bilanziert.' : `✗ ${failures} Befund(e).`}`)
