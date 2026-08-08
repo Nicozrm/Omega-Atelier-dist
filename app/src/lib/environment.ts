@@ -77,6 +77,25 @@ export interface RenderLighting {
    * so scrubbing time never steps the surroundings between brightness buckets.
    */
   exteriorAlbedoScale: number
+  /**
+   * Belichtung — die Blende der Kamera, 1 … 1,75.
+   *
+   * Sobald die Sonne das Tageslicht trägt statt eines richtungslosen
+   * Fülllichts, folgt die Bildhelligkeit dem Sonnenstand: nachmittags um 16 Uhr
+   * steht die Sonne 17° hoch und liefert auf eine waagerechte Fläche nur noch
+   * ein Drittel der Mittagseinstrahlung. Physikalisch ist das genau richtig —
+   * fotografisch ist es unbrauchbar, weil hier jemand an einem Regler zieht und
+   * das Bild nicht bei jeder Uhrzeit um ein Drittel einbrechen darf.
+   *
+   * Eine Kamera löst das mit der Blende, nicht mit stärkerem Licht: sie hebt
+   * den Pegel und lässt das **Verhältnis** zwischen Licht und Schatten
+   * unangetastet. Genau das tut dieser Faktor. Er ersetzt kein Fülllicht — er
+   * belichtet nach.
+   *
+   * Nachts bleibt er bewusst auf exakt 1: die Nacht ist getrimmt, und eine
+   * automatische Aufhellung würde sie zum Abend machen.
+   */
+  exposure: number
 }
 
 export interface EnvironmentState {
@@ -253,19 +272,96 @@ export function deriveEnvironment(input: EnvironmentInput = {}): EnvironmentStat
   // changes only marginally (0.87 → 0.92).
   const sunDrive = Math.pow(sunStrength, 0.6)
   const sunColor = kelvinToHex(above ? sunKelvin(elevation) : 6500)
-  const sunIntensity = above ? sunDrive * 1.4 * (1 - 0.75 * cloudiness) : 0
+  /*
+   * Das Verhältnis von Sonne zu Fülllicht — der eigentliche Hebel des Bildes.
+   * ────────────────────────────────────────────────────────────────────────
+   * Hier stand `sunDrive * 1.4`, während Ambient (0,24), Hemisphere (0,65) und
+   * die Studio-IBL (Faktor 1,0 auf Paneele mit 2,4- bis 3,0-facher Helligkeit)
+   * gleichzeitig Fülllicht aus allen Richtungen einspeisten. Nachgemessen
+   * am fertigen Bild: das Verhältnis Sonne zu Fülllicht lag bei etwa 1 : 2.
+   *
+   * Ein Bild ohne Lichtverhältnis hat keine Lichtrichtung, und ohne
+   * Lichtrichtung gibt es keinen sichtbaren Schattenwurf — der Rasen im
+   * Standbild schwankte über seine ganze Fläche um weniger als 15 von 255
+   * Helligkeitsstufen, war also vollkommen flach. Kein Kantenglätter, kein
+   * Umgebungsverdecker und keine Tonwertkurve holt das zurück; sie alle
+   * arbeiten auf einem Bild, das seine Form bereits verloren hat.
+   *
+   * Drei Dinge waren zusammengekommen:
+   *
+   *  1. three.js rechnet seit r155 physikalisch: der diffuse Anteil wird durch
+   *     π geteilt. Eine gerichtete Lichtquelle mit Stärke 1 liefert damit rund
+   *     0,32 — Tageslicht ist das nicht, und zwar um etwa den Faktor vier.
+   *  2. Ambient ist das flachste Licht überhaupt. Es trifft jede Fläche gleich,
+   *     füllt also **gezielt** genau die Stellen auf, die den Schatten
+   *     ausmachen: Ecken, Kontaktkanten, abgewandte Seiten.
+   *  3. Die Studio-IBL ist eine Innenraum-Lichtbox. Sie gehört an ein
+   *     Möbelfoto, nicht über eine Siedlung bei Mittagssonne.
+   *
+   * Deshalb ab hier: die Sonne trägt das Tageslicht (Faktor ~5), Ambient wird
+   * fast abgeschaltet und das Himmelslicht der Hemisphere bleibt das einzige
+   * nennenswerte Fülllicht — es ist wenigstens gerichtet (oben hell, unten
+   * dunkel) und modelliert dadurch, statt zu planieren.
+   *
+   * Bewölkung dreht das Verhältnis bewusst um: dann *ist* der Himmel die
+   * Lichtquelle, die Sonne verschwindet und das Fülllicht steigt. Genau so
+   * sieht ein bedeckter Tag aus — schattenlos und weich.
+   */
+  const sunIntensity = above ? sunDrive * 5.2 * (1 - 0.82 * cloudiness) : 0
   const shadowIntensity = above ? sunDrive * (1 - 0.85 * cloudiness) * 0.55 : 0
 
   // ── Ambient + hemisphere ──
+  /*
+   * Beide Werte sind ab hier **Endwerte** und werden in der Ansicht nicht mehr
+   * nachskaliert. Vorher standen dort noch `* 0,56` (Ambient) und `* 0,72`
+   * (Hemisphere) — zwei stille Korrekturfaktoren, die dieses Modell als
+   * Lichtquelle unlesbar machten: was hier 0,24 hiess, waren im Bild 0,134.
+   * Die Faktoren sind jetzt eingerechnet, es gibt nur noch eine Stelle.
+   *
+   * Die Nachtwerte sind bewusst exakt die bisherigen (Ambient 0,022,
+   * Hemisphere 0,108). Diese Szene ist schon mehrfach nachts ins Schwarze
+   * gekippt; die Umstellung fasst deshalb ausschliesslich den Tag an.
+   */
   const ambient = {
     color: kelvinToHex(Math.round(3000 + daylightF * 3000)),
-    intensity: 0.04 + daylightF * 0.2 + cloudiness * 0.05,
+    // Klarer Mittag 0,05 statt bisher effektiv 0,134. Ambient ist das flachste
+    // Licht der Szene — es füllt genau die Stellen auf, die den Schatten
+    // ausmachen. Bei Bewölkung darf es zurückkommen, dann stimmt es auch.
+    intensity: 0.022 + daylightF * 0.028 + cloudiness * 0.13,
   }
   const hemisphere = {
     skyColor: sky.zenithColor,
     groundColor: kelvinToHex(3200),
-    intensity: (0.15 + daylightF * 0.5) * (1 - cloudiness * 0.25),
+    /*
+     * Am Mittag 0,56 statt bisher effektiv 0,468 — als einziges Fülllicht
+     * bewusst leicht angehoben. Himmelslicht ist gerichtet (oben hell, unten
+     * dunkel); es modelliert, statt zu planieren, und trifft waagerechte
+     * Flächen voll. Genau dort wird es gebraucht: der Rasen bekommt an einem
+     * klaren Tag real rund ein Sechstel seiner Beleuchtung aus dem blauen
+     * Himmel, und ohne diesen Anteil kippt er ins Abendliche.
+     *
+     * Gegen die Sonne (mittags 2,18 auf eine waagerechte Fläche) steht es
+     * damit bei knapp 1 : 4 — das Verhältnis eines klaren Tages.
+     */
+    intensity: (0.108 + daylightF * 0.452) * (1 - cloudiness * 0.2) + cloudiness * 0.22,
   }
+
+  /*
+   * Blende. Bezugsgrösse ist die Einstrahlung der Sonne auf eine waagerechte
+   * Fläche, `sunIntensity × sin(Höhe)` — mittags rund 2,2, nachmittags um
+   * 16 Uhr nur noch 0,75.
+   *
+   * Der Zähler 9,0 liegt bewusst über dem Mittagswert: das Bild soll auch am
+   * Mittag mit gut 1,2 belichtet werden, weil das weggefallene Fülllicht sonst
+   * als Gesamtabdunklung übrig bliebe — die Bildmitte lag ohne Nachbelichtung
+   * bei 68 von 255 statt bei rund 90. Der flache Exponent 0,28 lässt einen
+   * tiefen Sonnenstand *sichtbar* dunkler bleiben, statt ihn wegzurechnen; die
+   * Obergrenze 1,75 ist der Punkt, an dem die Golden Hour lieber warm und tief
+   * bleibt, als auf Mittagshelligkeit hochgezogen zu werden.
+   */
+  const exposure = above
+    ? Math.min(1.75, Math.max(1, Math.pow(9.0 / Math.max(0.18, sunIntensity * Math.max(0, pos.direction.y)), 0.28)))
+    : 1
 
   return {
     time: { hour, dayOfYear: doy },
@@ -283,6 +379,7 @@ export function deriveEnvironment(input: EnvironmentInput = {}): EnvironmentStat
       hemisphere,
       sun: { color: sunColor, intensity: sunIntensity, castShadow: above, shadowIntensity },
       exteriorAlbedoScale: exteriorLightScale(elevation),
+      exposure,
     },
   }
 }

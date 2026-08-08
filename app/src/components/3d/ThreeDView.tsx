@@ -17,7 +17,8 @@
 
 import { useEffect, useMemo, useRef, useState, Suspense, Component } from 'react'
 import type { ReactNode, TouchEvent as ReactTouchEvent } from 'react'
-import { EffectComposer, Bloom, N8AO, SMAA, Vignette, ChromaticAberration, BrightnessContrast, HueSaturation, DepthOfField } from '@react-three/postprocessing'
+import { EffectComposer, Bloom, N8AO, SMAA, Vignette, ChromaticAberration, BrightnessContrast, HueSaturation, DepthOfField, ToneMapping } from '@react-three/postprocessing'
+import { ToneMappingMode } from 'postprocessing'
 import type { DepthOfFieldEffect } from 'postprocessing'
 import type { Wall, WallSubtype, Room, Floor, PlacedDevice, PlacedFurniture, Point, ModeKey } from '@/types'
 
@@ -115,14 +116,45 @@ function mulberry32(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
-/** Distance (m) at which the directional sun is placed along its direction vector. */
-const SUN_DISTANCE = 18
+/**
+ * Abstand (m), in dem die Sonne entlang ihrer Richtung aufgehängt wird.
+ *
+ * Hier stand 18 — und das war bei tiefer Sonne ein Fehler mit sichtbarer Folge.
+ * Die Höhe des Lichts über dem Ziel ist `SUN_DISTANCE × sin(Höhenwinkel)`; zur
+ * Golden Hour (17°) waren das **5,3 m**. Das Schattenfrustum beginnt aber bei
+ * `near` und blickt vom Licht aus nach unten: alles, was über dem Licht liegt,
+ * fällt vor die Near-Ebene und verschwindet aus der Schattenkarte. Ein 6 m
+ * hohes Haus stand damit ausgerechnet dann teilweise *über* seiner eigenen
+ * Lichtquelle, wenn der Schatten am längsten und am schönsten ist — und warf
+ * keinen mehr.
+ *
+ * Bei einer gerichteten Lichtquelle ist der Abstand für die Beleuchtung ohne
+ * Bedeutung; er verschiebt nur die Schattenkamera. Ihn grosszügig zu wählen
+ * kostet also nichts ausser etwas Tiefenauflösung, und die ist bei einer
+ * Orthogonalprojektion linear und damit unkritisch.
+ */
+const SUN_DISTANCE = 120
 /** Semantic time-of-day phase → image-based-lighting reflection strength.
  *  Keeps a day/night cue in metal/glass/gloss reflections (sky, sun and shadows
  *  already vary by phase via the lighting rig). Applied to `scene.environmentIntensity`
  *  so it costs nothing per frame and never rebuilds the env map. */
 const PHASE_TO_ENV_INTENSITY: Record<DayPhase, number> = {
-  night: 0.35, dawn: 0.7, goldenHour: 0.9, day: 1.0, dusk: 0.7,
+  /*
+   * Am Tag deutlich zurückgenommen. Die Werte hier wirken auf `buildInteriorEnv`
+   * — eine Studio-Lichtbox mit Paneelen von 2,4- bis 3,0-facher Weisshelligkeit.
+   * Bei Faktor 1,0 war sie tagsüber die **stärkste Lichtquelle der Szene** und
+   * hat als richtungsloses Rundumlicht jeden Schattenwurf der Sonne wieder
+   * zugeschüttet (nachgemessen: Bildmittelwert fiel von 90 auf 62, als sie
+   * versuchsweise abgeschaltet wurde — sie trug also ein Drittel des Bildes).
+   *
+   * Was sie leisten soll, bleibt erhalten: Spiegelungen in Glas, Metall und
+   * lackierten Flächen. Dafür genügt der halbe Wert bei Weitem; was darüber
+   * hinausging, war diffuses Fülllicht, das hier niemand bestellt hat.
+   *
+   * Die Nacht behält ihre 0,35: dann gibt es keine Sonne, und die IBL ist das
+   * Einzige, was Fenster und Beschläge noch als Material erkennbar hält.
+   */
+  night: 0.35, dawn: 0.30, goldenHour: 0.22, day: 0.18, dusk: 0.30,
 }
 const PHASE_LABEL: Record<DayPhase, string> = {
   night: 'Nacht', dawn: 'Dämmerung', goldenHour: 'Golden Hour', day: 'Tag', dusk: 'Abendrot',
@@ -4982,23 +5014,52 @@ function ContextGuard({ onLost }: { onLost: (lost: boolean) => void }) {
 /** Stands in for the missing grade on the ungraded 'off' tier. */
 const NO_POST_EXPOSURE = 1.25
 
-function ToneMapController({ photo }: { photo: boolean }) {
+function ToneMapController({ photo, exposure }: { photo: boolean; exposure: number }) {
   const gl = useThree((s) => s.gl)
   const scene = useThree((s) => s.scene)
+  // Der Wechsel der Tonwertkurve zwingt jedes Material zur Neuübersetzung —
+  // das ist teuer und darf nur passieren, wenn sich `photo` wirklich ändert.
   useEffect(() => {
     gl.toneMapping = photo ? THREE.AgXToneMapping : THREE.ACESFilmicToneMapping
-    // Tier 'off' renders without any composer, so it never receives the
-    // contrast grade the other tiers get and reads flatter and darker for it.
-    // Exposure is a free renderer scalar, so it compensates exactly there —
-    // and only there, otherwise the graded tiers would be pushed too bright.
-    const boost = readTier() === 'off' ? NO_POST_EXPOSURE : 1
-    gl.toneMappingExposure = (photo ? 1.0 : 0.95) * boost
     scene.traverse((o) => {
       const m = (o as THREE.Mesh).material
       if (Array.isArray(m)) m.forEach((mm) => { mm.needsUpdate = true })
       else if (m) (m as THREE.Material).needsUpdate = true
     })
   }, [gl, scene, photo])
+  /*
+   * Tonwertkurve und Belichtung werden **jeden Bild** gesetzt, nicht in einem
+   * Effekt. Der Grund ist kein Geschmack, sondern ein gemessener Fehler:
+   *
+   * `EffectComposer` aus @react-three/postprocessing setzt beim Einhängen
+   * `gl.toneMapping = NoToneMapping` (dist/EffectComposer.js) — die Bibliothek
+   * erwartet, dass die Tonwertkurve als eigener Effekt in der Kette sitzt.
+   * Dieser Effekt läuft nach dem hiesigen, weil der Composer im Baum später
+   * kommt. Ergebnis: die ganze hohe Stufe rendert **ohne Tonwertkurve**.
+   *
+   * Sichtbar ist das an den Lichtern. Ohne Kurve gibt es keine Schulter: alles
+   * über 1 klemmt hart auf Weiss. Besonnte Wände, Fensterscheiben und Lampen
+   * verlieren jede Zeichnung, und genau dieses Klemmen liest das Auge als
+   * „gerendert" statt „fotografiert". Nachgemessen war `gl.toneMapping` zur
+   * Laufzeit 0 (NoToneMapping), obwohl die Leiste „ACES" anzeigte.
+   *
+   * Zweite Folge: `toneMappingExposure` wird nur *innerhalb* der Kurve
+   * ausgewertet. Ohne Kurve ist die Belichtung wirkungslos — die tageszeit-
+   * abhängige Blende hätte nie etwas getan.
+   *
+   * Ein Zuweisen pro Bild kostet nichts (three übersetzt nur neu, wenn sich der
+   * Wert wirklich ändert) und ist gegen jede Einhängereihenfolge immun.
+   */
+  useFrame(() => {
+    const target = photo ? THREE.AgXToneMapping : THREE.ACESFilmicToneMapping
+    if (gl.toneMapping !== target) gl.toneMapping = target
+    // Tier 'off' renders without any composer, so it never receives the
+    // contrast grade the other tiers get and reads flatter and darker for it.
+    // Exposure is a free renderer scalar, so it compensates exactly there —
+    // and only there, otherwise the graded tiers would be pushed too bright.
+    const boost = readTier() === 'off' ? NO_POST_EXPOSURE : 1
+    gl.toneMappingExposure = (photo ? 1.0 : 0.95) * boost * exposure
+  })
   return null
 }
 
@@ -5735,7 +5796,21 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
    * Schattenspitze ab — das ist die bewusst gewählte Seite des Handels, denn
    * dort ist der Schatten ohnehin am blassesten.
    */
-  const shadowExtentM = Math.max(wM, hM) / 2 + 10
+  /*
+   * Nachgemessen: mit `max(wM,hM)/2 + 10` deckte das Schattenfrustum bei einem
+   * 12×8-m-Plan 16 m ab. Alles darüber hinaus — die Nachbarhäuser, die Strasse,
+   * der halbe sichtbare Rasen — lag ausserhalb und konnte **niemals** einen
+   * Schatten empfangen, egal wie stark die Sonne steht. Im Weitwinkel, und das
+   * ist die Voreinstellung, war damit der grössere Teil des Bildes
+   * schattenfrei; genau das liest das Auge als „gerendert".
+   *
+   * Der Handel ist die Texeldichte: 4096 Texel auf 32 m sind 7,8 mm, auf 80 m
+   * sind es 19,5 mm. Für Möbel-Kontaktschatten wäre das zu grob — die deckt
+   * aber `ContactShadows` mit einer eigenen, feinen Karte direkt unter dem Haus
+   * ab. Für Gebäude-, Baum- und Dachschatten ist es reichlich, und PCSS macht
+   * die Kante ohnehin weich.
+   */
+  const shadowExtentM = Math.min(40, Math.max(24, Math.max(wM, hM) / 2 + 10))
   const detail: WorldDetail = isHQ(tier) ? 'high' : tier === 'low' ? 'low' : 'medium'
   const centreVec = useMemo(() => ({ x: cx, z: cz }), [cx, cz])
   const { world, source: worldSource } = useNeighbourhood({
@@ -5821,7 +5896,11 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           ersten Zeichnen bestehen. */}
       <SkyDome env={env} groundAlbedo={groundAlbedo} />
       <fog attach="fog" args={[env.sky.horizonColor, Math.max(wM, hM) * 2.4, Math.max(world.extentM * 1.9, Math.max(wM, hM) * 7.5)]} />
-      <hemisphereLight args={[new THREE.Color(env.lighting.hemisphere.skyColor).lerp(new THREE.Color('#ffefd6'), 0.16), env.lighting.hemisphere.groundColor, env.lighting.hemisphere.intensity * 0.72]} />
+      {/* Die Faktoren 0,72 (hier) und 0,56 (Ambient, weiter unten) sind in
+          `deriveEnvironment` eingerechnet — siehe dort. Zwei Stellen, die
+          dieselbe Helligkeit skalieren, waren der Grund, warum das
+          Lichtmodell sich nicht mehr am Bild nachrechnen liess. */}
+      <hemisphereLight args={[new THREE.Color(env.lighting.hemisphere.skyColor).lerp(new THREE.Color('#ffefd6'), 0.16), env.lighting.hemisphere.groundColor, env.lighting.hemisphere.intensity]} />
       {/* Trim the flat uniform fill hard so the directional key, cove strips and
           corner AO shape the walls — the reference's moody falloff instead of a
           washed-out even glow (near-white walls otherwise blow out at eye level). */}
@@ -5857,7 +5936,7 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           focus={0.6}
         />
       )}
-      <ambientLight color={new THREE.Color(env.lighting.ambient.color).lerp(new THREE.Color('#ffecd0'), 0.18)} intensity={env.lighting.ambient.intensity * 0.56} />
+      <ambientLight color={new THREE.Color(env.lighting.ambient.color).lerp(new THREE.Color('#ffecd0'), 0.18)} intensity={env.lighting.ambient.intensity} />
       {/*
         Das Ziel der Sonne. Ohne dieses Objekt zielt eine `directionalLight` auf
         den Weltursprung — und der ist hier die **Ecke** des Grundstücks, nicht
@@ -5888,8 +5967,11 @@ function Scene({ env, floorVariant, wallMaterialId, walkMode, envPreset, showHou
           castShadow={env.lighting.sun.castShadow}
           shadow-mapSize-width={isHQ() ? 4096 : isHandheld() ? 1024 : 2048}
           shadow-mapSize-height={isHQ() ? 4096 : isHandheld() ? 1024 : 2048}
-          shadow-camera-near={0.1}
-          shadow-camera-far={50}
+          // Near/Far spannen jetzt den ganzen Lichtweg auf, statt bei 50 m zu
+          // enden — sonst schneidet die Far-Ebene ab, was der grössere
+          // Frustumausschnitt gerade erst hinzugewonnen hat.
+          shadow-camera-near={1}
+          shadow-camera-far={SUN_DISTANCE * 2}
           shadow-camera-left={-shadowExtentM}
           shadow-camera-right={shadowExtentM}
           shadow-camera-top={shadowExtentM}
@@ -6684,8 +6766,21 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
               // re-renders on demand there instead.
               preserveDrawingBuffer: !isMobileDevice(),
               powerPreference: 'high-performance',
-              toneMapping: THREE.AgXToneMapping,
-              toneMappingExposure: readTier() === 'off' ? NO_POST_EXPOSURE : 1.0,
+              /*
+               * Tonwertkurve und Belichtung stehen bewusst **nicht** mehr hier.
+               *
+               * Dieses Objektliteral wird bei jedem Render neu erzeugt, und R3F
+               * spielt es dann erneut auf den Renderer. Alles, was hier steht,
+               * wird also fortlaufend zurückgesetzt — was `ToneMapController`
+               * gesetzt hatte, war beim nächsten Zustandswechsel wieder weg.
+               * Nachgemessen: die tageszeitabhängige Belichtung wirkte um 11 Uhr
+               * und war um 16 Uhr spurlos verschwunden, je nachdem, ob zufällig
+               * ein Render dazwischenlag. Derselbe Mechanismus hat auch den
+               * Foto-Look (AgX ↔ ACES) still wieder auf AgX zurückgedreht.
+               *
+               * Beides gehört jetzt allein `ToneMapController`; hier bleiben
+               * nur Flags, die den Kontext bei seiner Erzeugung beschreiben.
+               */
               outputColorSpace: THREE.SRGBColorSpace,
             }}
             style={{ background: `linear-gradient(180deg, ${env.sky.zenithColor} 0%, ${env.sky.horizonColor} 100%)` }}
@@ -6702,7 +6797,7 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
             <CompassTracker needle={compassNeedleRef} />
             <CaptureHelper captureRef={captureRef} />
             {!walkMode && <CinematicDirector req={flyReq} hud={tourHud} onTourEnd={endTour} />}
-            <ToneMapController photo={photoLook} />
+            <ToneMapController photo={photoLook} exposure={env.lighting.exposure} />
             <Scene env={env} floorVariant={floorVariant} wallMaterialId={wallMaterialId} walkMode={walkMode} envPreset={envPreset} showHouse={showHouse} stackView={stackView} houseStyle={houseStyle} residents={residents} onResidentStatus={setResidentStatus} season={season} precip={precip} cityStyle={cityStyle} streetLife={streetLife} onWorldSource={setWorldSource} onGroundStatus={setGroundNote} />
             {/* Mobile keeps the cheap pass (SMAA + grading, no MSAA target):
                 the black canvas turned out to be the reduced-motion tier, not
@@ -6741,6 +6836,38 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
                       CinematicDirector pulls focus during glides. */}
                   <CinematicFocus walkMode={walkMode} />
                   <Bloom luminanceThreshold={0.88} intensity={0.24} mipmapBlur radius={0.55} />
+                  {/*
+                    Die Tonwertkurve — und der Grund, warum sie hier steht und
+                    nicht am Renderer.
+
+                    three.js schaltet die Tonwertkurve ab, sobald in ein
+                    Renderziel gezeichnet wird statt auf die Leinwand
+                    (WebGLRenderer: `_currentRenderTarget === null ? toneMapping
+                    : NoToneMapping`). Das ist richtig so — eine Kurve darf nur
+                    **einmal** wirken, ganz am Ende. Ein EffectComposer zeichnet
+                    aber grundsätzlich in ein Renderziel. Folge: auf jeder Stufe
+                    mit Nachbearbeitung, also auf jedem Desktop, lief diese
+                    Szene **ohne jede Tonwertkurve**. Zur Laufzeit gemessen:
+                    `gl.toneMapping` war 0, obwohl die Leiste „ACES" anzeigte,
+                    und `toneMappingExposure` hatte nachweislich keinerlei
+                    Wirkung — der Wert liess sich verdreifachen, ohne dass sich
+                    ein einziges Pixel änderte.
+
+                    Ohne Kurve gibt es keine Schulter: alles über 1 klemmt hart
+                    auf Weiss. Besonnte Wände, Fensterflächen und Lampen
+                    verlieren jede Zeichnung, Farbverläufe brechen an der
+                    Klemmgrenze ab — das ist der Unterschied zwischen
+                    „gerendert" und „fotografiert".
+
+                    Als Effekt läuft sie dort, wo sie hingehört: nach den
+                    Rechnungen im hohen Dynamikumfang (Verdeckung, Bloom, Tiefen-
+                    unschärfe) und vor Farbkorrektur und Kantenglättung, die
+                    beide ein fertiges Bild erwarten. `toneMappingExposure` wird
+                    von three automatisch in jedes Programm geschrieben, das die
+                    Uniform kennt — die tageszeitabhängige Blende wirkt damit
+                    hier ebenfalls.
+                  */}
+                  <ToneMapping mode={photoLook ? ToneMappingMode.AGX : ToneMappingMode.ACES_FILMIC} />
                   <HueSaturation saturation={0.08} />
                   <BrightnessContrast contrast={0.05} />
                   <ChromaticAberration offset={CA_OFFSET} radialModulation modulationOffset={0.35} />
@@ -6753,6 +6880,9 @@ export function ThreeDView({ onClose, embedded = false, preview = false }: {
                    the cheap contrast/vignette mood shaders. No AO/bloom → still
                    light enough for weaker GPUs. */
                 <EffectComposer multisampling={isHandheld() ? 0 : 2}>
+                  {/* Auch hier: der Composer zeichnet in ein Renderziel, also
+                      muss die Tonwertkurve in die Kette. Siehe oben. */}
+                  <ToneMapping mode={photoLook ? ToneMappingMode.AGX : ToneMappingMode.ACES_FILMIC} />
                   <BrightnessContrast contrast={0.07} brightness={-0.008} />
                   <Vignette offset={0.32} darkness={0.4} />
                   <SMAA />
